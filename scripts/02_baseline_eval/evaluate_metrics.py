@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+===============================================================================
+Module: evaluate_metrics.py
+Mục đích: Đánh giá toàn diện chất lượng Diarization (DER, JER, SCA, MAE)
+          theo chuẩn quốc tế (NIST / DIHARD / NOTSOFAR1) bằng pyannote.metrics.
+Hỗ trợ lát cắt:
+  - DER_total (Toàn bộ tập dữ liệu)
+  - DER_2spk (Lát cắt 2 người nói - Dữ liệu thoại thật)
+  - DER_3to7spk (Lát cắt 3-7 người nói - Dữ liệu mô phỏng)
+===============================================================================
+"""
+
+import os
+import sys
+import json
+import argparse
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+import numpy as np
+from pyannote.core import Annotation, Segment, Timeline
+from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
+
+
+def parse_rttm_file(rttm_path: str, uri: Optional[str] = None) -> Annotation:
+    """
+    Đọc file RTTM chuẩn NIST 10 cột thành pyannote.core.Annotation.
+    Định dạng dòng: SPEAKER <file_id> <chnl> <onset> <duration> <NA> <NA> <speaker_id> <NA> <NA>
+    """
+    path_obj = Path(rttm_path)
+    file_uri = uri or path_obj.stem
+    annotation = Annotation(uri=file_uri)
+    
+    if not path_obj.exists():
+        return annotation
+
+    with open(rttm_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or not line.startswith("SPEAKER"):
+                continue
+            parts = line.split()
+            if len(parts) >= 8:
+                try:
+                    start = float(parts[3])
+                    duration = float(parts[4])
+                    speaker = parts[7]
+                    if duration > 0.001:
+                        annotation[Segment(start, start + duration)] = speaker
+                except (ValueError, IndexError):
+                    continue
+                    
+    return annotation
+
+
+def compute_metrics_for_dataset(
+    manifest_path: str,
+    hyp_rttm_dir: str,
+    output_json: Optional[str] = None,
+    collar_main: float = 0.0,
+    collar_secondary: float = 0.25,
+    verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Chạy đánh giá toàn bộ các file trong manifest với các file hypothesis RTTM tương ứng.
+    """
+    manifest_p = Path(manifest_path)
+    hyp_dir_p = Path(hyp_rttm_dir)
+
+    if not manifest_p.exists():
+        raise FileNotFoundError(f"Không tìm thấy manifest file: {manifest_path}")
+    if not hyp_dir_p.exists():
+        raise FileNotFoundError(f"Không tìm thấy thư mục hypothesis RTTM: {hyp_rttm_dir}")
+
+    # Đọc manifest JSONL
+    manifest_items = []
+    with open(manifest_p, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                manifest_items.append(json.loads(line))
+
+    # Khởi tạo các metric cumulative
+    der_metric_c0 = DiarizationErrorRate(collar=collar_main, skip_overlap=False)
+    der_metric_c025 = DiarizationErrorRate(collar=collar_secondary, skip_overlap=False)
+    jer_metric = JaccardErrorRate(collar=collar_main, skip_overlap=False)
+
+    # Sub-metrics cho từng lát cắt (Slice)
+    # Lát cắt 1: 2 speakers (Real data)
+    slice_2spk_c0 = DiarizationErrorRate(collar=collar_main, skip_overlap=False)
+    slice_2spk_c025 = DiarizationErrorRate(collar=collar_secondary, skip_overlap=False)
+    slice_2spk_jer = JaccardErrorRate(collar=collar_main, skip_overlap=False)
+    
+    # Lát cắt 2: 3-7 speakers (Synthetic data)
+    slice_multi_c0 = DiarizationErrorRate(collar=collar_main, skip_overlap=False)
+    slice_multi_c025 = DiarizationErrorRate(collar=collar_secondary, skip_overlap=False)
+    slice_multi_jer = JaccardErrorRate(collar=collar_main, skip_overlap=False)
+
+    file_results = []
+    speaker_count_correct = 0
+    speaker_count_abs_errors = []
+
+    slice_2spk_correct = 0
+    slice_2spk_abs_errors = []
+    
+    slice_multi_correct = 0
+    slice_multi_abs_errors = []
+
+    missing_hyp_count = 0
+
+    for item in manifest_items:
+        audio_path = item.get("audio_filepath", "")
+        ref_rttm_path = item.get("rttm_filepath", "")
+        duration = float(item.get("duration", 0.0))
+        stem = Path(audio_path).stem
+
+        hyp_rttm_path = hyp_dir_p / f"{stem}.rttm"
+        if not hyp_rttm_path.exists():
+            missing_hyp_count += 1
+            continue
+
+        ref_annot = parse_rttm_file(ref_rttm_path, uri=stem)
+        hyp_annot = parse_rttm_file(str(hyp_rttm_path), uri=stem)
+
+        # UEM timeline giới hạn từ 0 đến audio duration
+        uem_timeline = Timeline([Segment(0.0, duration)]) if duration > 0 else None
+
+        # Số lượng người nói
+        ref_num_spk = len(ref_annot.labels())
+        hyp_num_spk = len(hyp_annot.labels())
+        
+        is_correct_count = (ref_num_spk == hyp_num_spk)
+        count_err = abs(hyp_num_spk - ref_num_spk)
+
+        if is_correct_count:
+            speaker_count_correct += 1
+        speaker_count_abs_errors.append(count_err)
+
+        # Đánh giá đơn lẻ từng file
+        f_der_c0_obj = DiarizationErrorRate(collar=collar_main, skip_overlap=False)
+        f_der_c0 = f_der_c0_obj(ref_annot, hyp_annot, uem=uem_timeline)
+
+        f_der_c025_obj = DiarizationErrorRate(collar=collar_secondary, skip_overlap=False)
+        f_der_c025 = f_der_c025_obj(ref_annot, hyp_annot, uem=uem_timeline)
+
+        f_jer_obj = JaccardErrorRate(collar=collar_main, skip_overlap=False)
+        f_jer = f_jer_obj(ref_annot, hyp_annot, uem=uem_timeline)
+
+        # Cập nhật Global cumulative
+        der_metric_c0(ref_annot, hyp_annot, uem=uem_timeline)
+        der_metric_c025(ref_annot, hyp_annot, uem=uem_timeline)
+        jer_metric(ref_annot, hyp_annot, uem=uem_timeline)
+
+        # Phân loại lát cắt (2 người vs 3-7 người)
+        is_2spk = (ref_num_spk <= 2)
+        if is_2spk:
+            slice_2spk_c0(ref_annot, hyp_annot, uem=uem_timeline)
+            slice_2spk_c025(ref_annot, hyp_annot, uem=uem_timeline)
+            slice_2spk_jer(ref_annot, hyp_annot, uem=uem_timeline)
+            if is_correct_count:
+                slice_2spk_correct += 1
+            slice_2spk_abs_errors.append(count_err)
+        else:
+            slice_multi_c0(ref_annot, hyp_annot, uem=uem_timeline)
+            slice_multi_c025(ref_annot, hyp_annot, uem=uem_timeline)
+            slice_multi_jer(ref_annot, hyp_annot, uem=uem_timeline)
+            if is_correct_count:
+                slice_multi_correct += 1
+            slice_multi_abs_errors.append(count_err)
+
+        file_results.append({
+            "stem": stem,
+            "duration": duration,
+            "ref_spk": ref_num_spk,
+            "hyp_spk": hyp_num_spk,
+            "der_collar0": round(f_der_c0 * 100, 2),
+            "der_collar025": round(f_der_c025 * 100, 2),
+            "jer": round(f_jer * 100, 2),
+            "slice": "2spk_real" if is_2spk else "3to7spk_sim"
+        })
+
+    # Tổng kết chỉ số Global
+    total_evaluated = len(file_results)
+    if total_evaluated == 0:
+        raise RuntimeError("Không có file nào được đánh giá! Hãy kiểm tra đường dẫn hypothesis RTTM.")
+
+    def extract_der_components(der_obj):
+        acc = der_obj.accumulated_
+        total_time = acc.get("total", 0.0)
+        if total_time <= 1e-6:
+            return {"der": 0.0, "miss": 0.0, "fa": 0.0, "confusion": 0.0}
+        return {
+            "der": round(abs(der_obj) * 100, 2),
+            "miss": round((acc.get("missed detection", 0.0) / total_time) * 100, 2),
+            "fa": round((acc.get("false alarm", 0.0) / total_time) * 100, 2),
+            "confusion": round((acc.get("confusion", 0.0) / total_time) * 100, 2),
+        }
+
+    global_c0 = extract_der_components(der_metric_c0)
+    global_c025 = extract_der_components(der_metric_c025)
+    global_jer = round(abs(jer_metric) * 100, 2)
+    global_sca = round((speaker_count_correct / total_evaluated) * 100, 2)
+    global_mae = round(float(np.mean(speaker_count_abs_errors)), 2)
+
+    # Slice 2spk
+    slice_2_count = len(slice_2spk_abs_errors)
+    s2_c0 = extract_der_components(slice_2spk_c0)
+    s2_c025 = extract_der_components(slice_2spk_c025)
+    s2_jer = round(abs(slice_2spk_jer) * 100, 2) if slice_2_count > 0 else 0.0
+    s2_sca = round((slice_2spk_correct / slice_2_count) * 100, 2) if slice_2_count > 0 else 0.0
+    s2_mae = round(float(np.mean(slice_2spk_abs_errors)), 2) if slice_2_count > 0 else 0.0
+
+    # Slice 3-7spk
+    slice_m_count = len(slice_multi_abs_errors)
+    sm_c0 = extract_der_components(slice_multi_c0)
+    sm_c025 = extract_der_components(slice_multi_c025)
+    sm_jer = round(abs(slice_multi_jer) * 100, 2) if slice_m_count > 0 else 0.0
+    sm_sca = round((slice_multi_correct / slice_m_count) * 100, 2) if slice_m_count > 0 else 0.0
+    sm_mae = round(float(np.mean(slice_multi_abs_errors)), 2) if slice_m_count > 0 else 0.0
+
+    summary = {
+        "manifest": str(manifest_path),
+        "hyp_dir": str(hyp_rttm_dir),
+        "total_files": len(manifest_items),
+        "evaluated_files": total_evaluated,
+        "missing_files": missing_hyp_count,
+        "overall": {
+            "der_collar0": global_c0["der"],
+            "der_collar025": global_c025["der"],
+            "miss_rate_c025": global_c025["miss"],
+            "false_alarm_c025": global_c025["fa"],
+            "confusion_c025": global_c025["confusion"],
+            "jer": global_jer,
+            "sca_pct": global_sca,
+            "mae": global_mae
+        },
+        "slice_2spk_real": {
+            "count": slice_2_count,
+            "der_collar0": s2_c0["der"],
+            "der_collar025": s2_c025["der"],
+            "jer": s2_jer,
+            "sca_pct": s2_sca,
+            "mae": s2_mae
+        },
+        "slice_3to7spk_sim": {
+            "count": slice_m_count,
+            "der_collar0": sm_c0["der"],
+            "der_collar025": sm_c025["der"],
+            "jer": sm_jer,
+            "sca_pct": sm_sca,
+            "mae": sm_mae
+        },
+        "file_details": file_results
+    }
+
+    if output_json:
+        out_p = Path(output_json)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        if verbose:
+            print(f"[+] Báo cáo kết quả chi tiết đã lưu tại: {out_p}")
+
+    if verbose:
+        print_benchmark_table(summary)
+
+    return summary
+
+
+def print_benchmark_table(summary: Dict[str, Any]):
+    """
+    In bảng tổng kết chỉ số chuẩn MLOps ra màn hình console.
+    """
+    ov = summary["overall"]
+    s2 = summary["slice_2spk_real"]
+    sm = summary["slice_3to7spk_sim"]
+
+    print("\n" + "=" * 80)
+    print("📊 BẢNG TỔNG KẾT KẾT QUẢ DIARIZATION BENCHMARK (CHUẨN NIST / NOTSOFAR1)")
+    print("=" * 80)
+    print(f"[*] Tập dữ liệu:  {summary['manifest']}")
+    print(f"[*] Tổng số file: {summary['evaluated_files']} / {summary['total_files']} files")
+    print("-" * 80)
+    print(f"{'LÁT CẮT (SLICE)':<22} | {'SỐ FILE':<8} | {'DER (Collar 0s)':<16} | {'DER (0.25s)':<12} | {'JER':<8} | {'SCA':<7} | {'MAE':<5}")
+    print("-" * 80)
+    print(f"{'1. TỔNG THỂ (Overall)':<22} | {summary['evaluated_files']:<8} | {ov['der_collar0']:>6.2f}%         | {ov['der_collar025']:>6.2f}%    | {ov['jer']:>5.2f}% | {ov['sca_pct']:>5.1f}% | {ov['mae']:>4.2f}")
+    print(f"{'2. 2 Người (Real)':<22} | {s2['count']:<8} | {s2['der_collar0']:>6.2f}%         | {s2['der_collar025']:>6.2f}%    | {s2['jer']:>5.2f}% | {s2['sca_pct']:>5.1f}% | {s2['mae']:>4.2f}")
+    print(f"{'3. 3-7 Người (Simulated)':<22} | {sm['count']:<8} | {sm['der_collar0']:>6.2f}%         | {sm['der_collar025']:>6.2f}%    | {sm['jer']:>5.2f}% | {sm['sca_pct']:>5.1f}% | {sm['mae']:>4.2f}")
+    print("-" * 80)
+    print(f"[*] Chi tiết thành phần lỗi (Collar 0.25s):")
+    print(f"    - Missed Speech (Bỏ sót giọng nói):      {ov['miss_rate_c025']:>6.2f}%")
+    print(f"    - False Alarm (Báo động giả):            {ov['false_alarm_c025']:>6.2f}%")
+    print(f"    - Speaker Confusion (Nhầm người nói):    {ov['confusion_c025']:>6.2f}%")
+    print("=" * 80 + "\n")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Đánh giá chỉ số Speaker Diarization bằng pyannote.metrics")
+    parser.add_argument("--manifest", type=str, required=True, help="Đường dẫn file manifest JSONL (ví dụ dev_manifest.json)")
+    parser.add_argument("--hyp_rttm_dir", type=str, required=True, help="Thư mục chứa các file RTTM hypothesis")
+    parser.add_argument("--output_json", type=str, default=None, help="Đường dẫn lưu kết quả summary dạng JSON")
+    parser.add_argument("--collar_main", type=float, default=0.0, help="Collar chính (mặc định 0.0s theo NOTSOFAR1)")
+    parser.add_argument("--collar_secondary", type=float, default=0.25, help="Collar phụ (mặc định 0.25s)")
+    
+    args = parser.parse_args()
+    compute_metrics_for_dataset(
+        manifest_path=args.manifest,
+        hyp_rttm_dir=args.hyp_rttm_dir,
+        output_json=args.output_json,
+        collar_main=args.collar_main,
+        collar_secondary=args.collar_secondary,
+        verbose=True
+    )

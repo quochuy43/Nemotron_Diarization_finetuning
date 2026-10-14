@@ -1,0 +1,100 @@
+# ===============================================================================
+# CẤU HÌNH HUẤN LUYỆN STREAMING SORTFORMER 0.32S (TIẾNG NHẬT)
+# Dự án: Real-time Japanese Speaker Diarization (Nemotron-3 0.32s)
+# Tương thích: NVIDIA NeMo & Hugging Face Transformers
+# ===============================================================================
+
+model:
+  pretrained_model_name_or_path: "nvidia/Nemotron-3-Diarization"
+  sample_rate: 16000
+  max_speakers: 8
+  frame_step: 0.01  # 10ms frame resolution
+  
+  # Cấu hình Streaming Ultra-Low Latency 0.32s (320ms) từ NVIDIA
+  streaming:
+    chunk_len: 3                   # 3 frames = 240 ms
+    chunk_right_context: 1         # 1 frame = 80 ms (lookahead)
+    fifo_len: 264                  # Ngữ cảnh khung thời gian gần nhất
+    spkcache_len: 264              # Arrival-Order Speaker Cache
+    spkcache_update_period: 222    # Chu kỳ cập nhật speaker cache
+    latency_seconds: 0.32          # Tổng độ trễ buffer: (3 + 1) * 80ms = 320ms
+
+  # Chiến lược đóng băng tầng (Layer Freezing):
+  # Đóng băng nửa dưới (16/31 lớp) của encoder để bảo tồn đặc trưng âm học gốc
+  freeze_encoder_layers: 16
+  total_encoder_layers: 31
+
+training:
+  optimizer:
+    name: "AdamW"
+    learning_rate: 1.0e-5
+    weight_decay: 0.01
+    betas: [0.9, 0.98]
+    eps: 1.0e-8
+
+  scheduler:
+    name: "LinearWarmupCosineAnnealing"
+    warmup_steps: 500
+    min_lr: 1.0e-7
+
+  loss:
+    type: "pit_bce"               # Permutation-Invariant Multi-label BCE (Hungarian Matching)
+    pos_weight: 1.5               # Phạt nặng hơn khi bỏ sót tiếng nói (Missed speech)
+
+  # Cấu hình Batching & Dữ liệu
+  batch_size: 4
+  gradient_accumulation_steps: 4  # Effective batch size = 16
+  max_audio_length_seconds: 30.0  # Cửa sổ âm thanh cho mỗi chunk huấn luyện
+  num_workers: 4
+  precision: "16-mixed"           # 16-mixed (AMP FP16) hoặc 32 (FP32)
+  seed: 42
+
+  # Quản lý Checkpoints (Chiến lược 50 Checkpoints theo Roadmap)
+  target_checkpoints_per_run: 50
+  save_top_k: 5                   # Lưu trữ Top-5 checkpoint có Dev DER thấp nhất
+  monitor_metric: "dev_der_collar0"
+  metric_mode: "min"
+
+# Ma trận các Version thí nghiệm (Grid Search Roadmap)
+experiment_versions:
+  v1_0:
+    name: "train_v1_0_sim_only"
+    manifest: "data/manifests/train_v1_0_sim_only.json"
+    description: "Huấn luyện thuần dữ liệu mô phỏng (77.8h - synthetic_78)"
+    ratio_real_to_sim: "0:100"
+    num_files: 1520
+    epochs: 10
+
+  v1_1:
+    name: "train_v1_1_ratio_1_3"
+    manifest: "data/manifests/train_v1_1_ratio_1_3.json"
+    description: "Tỷ lệ Thật : Mô phỏng = 1 : 3 (26.0h Thật + 77.8h Phỏng)"
+    ratio_real_to_sim: "1:3"
+    num_files: 1645
+    epochs: 10
+
+  v1_2:
+    name: "train_v1_2_ratio_1_5"
+    manifest: "data/manifests/train_v1_2_ratio_1_5.json"
+    description: "Tỷ lệ Thật : Mô phỏng = 1 : 5 (26.0h Thật + 131.2h Phỏng)"
+    ratio_real_to_sim: "1:5"
+    num_files: 2685
+    epochs: 8
+
+  v1_3:
+    name: "train_v1_3_ratio_1_8"
+    manifest: "data/manifests/train_v1_3_ratio_1_8.json"
+    description: "Tỷ lệ Thật : Mô phỏng = 1 : 8 (26.0h Thật + 211.0h Phỏng)"
+    ratio_real_to_sim: "1:8"
+    num_files: 4245
+    epochs: 6
+
+validation:
+  manifest: "data/manifests/dev_manifest.json"
+  eval_frequency_steps: 200       # Đánh giá trên tập Dev sau mỗi N bước
+  collar_main: 0.0                # Collar 0s (Tiêu chuẩn nghiêm ngặt cho Realtime)
+  collar_secondary: 0.25          # Collar 0.25s (Tiêu chuẩn tham chiếu NIST)
+
+test:
+  manifest: "data/manifests/test_manifest.json"
+  description: "Tập kiểm thử độc lập đóng băng 100% (Zero Data Leakage)"

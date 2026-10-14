@@ -1,0 +1,21 @@
+# 1. Bỏ qua toàn bộ file âm thanh nặng
+data/real/**/*.wav
+data/synthetic/**/*.wav
+data/raw/
+*.zip
+*.tar.gz
+
+# 2. Bỏ qua Checkpoints mô hình và ma trận xác suất nặng
+experiments/checkpoints/
+experiments/baselines/**/*.npz
+experiments/**/temp_eval/
+*.pt
+*.bin
+*.nemo
+
+# 3. Bỏ qua file rác Python & OS
+__pycache__/
+*.pyc
+logs.txt
+.vscode/
+.idea/
