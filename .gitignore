@@ -1,21 +1,28 @@
-# 1. Bỏ qua toàn bộ file âm thanh nặng
-data/real/**/*.wav
-data/synthetic/**/*.wav
+# ===============================================================================
+# GITIGNORE CHO DỰ ÁN SPEAKER DIARIZATION
+# Đảm bảo chỉ theo dõi Source Code, Manifests và Docs; loại trừ toàn bộ dữ liệu & model
+# ===============================================================================
+
+# 1. Toàn bộ dữ liệu âm thanh và nhãn local (Chỉ theo dõi data/manifests/)
+data/real/
+data/synthetic/
 data/raw/
 *.zip
 *.tar.gz
 
-# 2. Bỏ qua Checkpoints mô hình và ma trận xác suất nặng
-experiments/checkpoints/
-experiments/baselines/**/*.npz
-experiments/**/temp_eval/
+# 2. Toàn bộ thư mục lưu trữ thực nghiệm, checkpoints và ma trận xác suất
+experiments/
+experiments/baselines
 *.pt
 *.bin
 *.nemo
+*.npz
 
-# 3. Bỏ qua file rác Python & OS
+# 3. File rác Python, IDE và hệ điều hành
 __pycache__/
 *.pyc
 logs.txt
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
