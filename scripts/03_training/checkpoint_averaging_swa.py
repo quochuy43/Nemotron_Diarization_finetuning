@@ -45,7 +45,7 @@ baseline_eval_dir = scripts_dir / "02_baseline_eval"
 if str(baseline_eval_dir) not in sys.path:
     sys.path.insert(0, str(baseline_eval_dir))
 
-from evaluate_metrics import compute_metrics_for_dataset
+from evaluate_metrics import compute_metrics_for_dataset, resolve_file_path
 from tune_postprocessing import binarize_and_filter_probs, write_segments_to_rttm
 
 
@@ -99,8 +99,9 @@ def evaluate_model_on_manifest(
     model.eval()
     output_rttm_dir.mkdir(parents=True, exist_ok=True)
 
+    manifest_p = Path(resolve_file_path(manifest_path))
     manifest_items = []
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_p, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -109,11 +110,11 @@ def evaluate_model_on_manifest(
     if limit_files is not None and limit_files > 0:
         manifest_items = manifest_items[:limit_files]
 
-    print(f"[*] Đang chạy suy luận trên {len(manifest_items)} files: {Path(manifest_path).name}...")
+    print(f"[*] Đang chạy suy luận trên {len(manifest_items)} files: {manifest_p.name}...")
 
     with torch.inference_mode():
         for item in tqdm(manifest_items, desc="Evaluating", unit="file"):
-            wav_path = item["audio_filepath"]
+            wav_path = resolve_file_path(item["audio_filepath"])
             stem = Path(wav_path).stem
             wav_data, sr = sf.read(wav_path)
             if wav_data.ndim > 1:
@@ -134,7 +135,7 @@ def evaluate_model_on_manifest(
             write_segments_to_rttm(segs, uri=stem, rttm_path=str(out_rttm))
 
     metrics = compute_metrics_for_dataset(
-        manifest_path=manifest_path,
+        manifest_path=str(manifest_p),
         hyp_rttm_dir=str(output_rttm_dir),
         collar_main=0.0,
         collar_secondary=0.25,
@@ -197,6 +198,9 @@ def run_checkpoint_averaging_and_benchmark(
     out_dir_p = Path(output_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
     cp_dir_p = Path(checkpoints_dir)
+
+    dev_manifest = resolve_file_path(dev_manifest)
+    test_manifest = resolve_file_path(test_manifest)
 
     print("\n" + "=" * 80)
     print("🏆 BẮT ĐẦU CHECKPOINT AVERAGING (SWA v2.0) & NGHIỆM THU TEST SET")
@@ -315,19 +319,35 @@ def run_checkpoint_averaging_and_benchmark(
         json.dump(final_report, f, ensure_ascii=False, indent=2)
 
     # 10. In bảng nghiệm thu Leaderboard
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 110)
     print("📊 BẢNG TỔNG KẾT NGHIỆM THU MÔ HÌNH XUẤT XƯỞNG (FINAL SWA v2.0)")
-    print("=" * 80)
-    print(f"{'TẬP DỮ LIỆU':<20} | {'DER (Collar 0s)':<16} | {'DER (0.25s)':<14} | {'JER':<10} | {'SCA':<10}")
-    print("-" * 80)
-    print(f"{'Dev Set (Overall)':<20} | {dev_metrics['overall']['der_collar0']:>6.2f}%         | {dev_metrics['overall']['der_collar025']:>6.2f}%       | {dev_metrics['overall']['jer']:>6.2f}%  | {dev_metrics['overall']['sca_pct']:>5.1f}%")
-    print(f"{'Dev Set (2 người)':<20} | {dev_metrics['slice_2spk_real']['der_collar0']:>6.2f}%         | {dev_metrics['slice_2spk_real']['der_collar025']:>6.2f}%       | {dev_metrics['slice_2spk_real']['jer']:>6.2f}%  | {dev_metrics['slice_2spk_real']['sca_pct']:>5.1f}%")
-    print(f"{'Dev Set (3-7 người)':<20} | {dev_metrics['slice_3to7spk_sim']['der_collar0']:>6.2f}%         | {dev_metrics['slice_3to7spk_sim']['der_collar025']:>6.2f}%       | {dev_metrics['slice_3to7spk_sim']['jer']:>6.2f}%  | {dev_metrics['slice_3to7spk_sim']['sca_pct']:>5.1f}%")
-    print("-" * 80)
-    print(f"{'Test Đóng Băng':<20} | {test_metrics['overall']['der_collar0']:>6.2f}%         | {test_metrics['overall']['der_collar025']:>6.2f}%       | {test_metrics['overall']['jer']:>6.2f}%  | {test_metrics['overall']['sca_pct']:>5.1f}%")
-    print(f"{'Test (2 người)':<20} | {test_metrics['slice_2spk_real']['der_collar0']:>6.2f}%         | {test_metrics['slice_2spk_real']['der_collar025']:>6.2f}%       | {test_metrics['slice_2spk_real']['jer']:>6.2f}%  | {test_metrics['slice_2spk_real']['sca_pct']:>5.1f}%")
-    print(f"{'Test (3-7 người)':<20} | {test_metrics['slice_3to7spk_sim']['der_collar0']:>6.2f}%         | {test_metrics['slice_3to7spk_sim']['der_collar025']:>6.2f}%       | {test_metrics['slice_3to7spk_sim']['jer']:>6.2f}%  | {test_metrics['slice_3to7spk_sim']['sca_pct']:>5.1f}%")
-    print("=" * 80)
+    print("=" * 110)
+    print(f"{'TẬP DỮ LIỆU':<22} | {'DER (c0)':<9} | {'Miss':<7} | {'FA':<7} | {'Conf':<7} | {'DER (c0.25)':<11} | {'JER':<7} | {'SCA':<6}")
+    print("-" * 110)
+    slices_to_print = [
+        ("Dev Set (Overall)", dev_metrics["overall"]),
+        ("Dev Set (2 người)", dev_metrics["slice_2spk_real"]),
+        ("Dev Set (3-7 người)", dev_metrics["slice_3to7spk_sim"]),
+        ("Test Đóng Băng", test_metrics["overall"]),
+        ("Test (2 người)", test_metrics["slice_2spk_real"]),
+        ("Test (3-7 người)", test_metrics["slice_3to7spk_sim"])
+    ]
+    for name, s_met in slices_to_print:
+        d0 = s_met.get("der_collar0", 0.0)
+        m0 = s_met.get("miss_rate_c0", 0.0)
+        fa0 = s_met.get("false_alarm_c0", 0.0)
+        cf0 = s_met.get("confusion_c0", 0.0)
+        d025 = s_met.get("der_collar025", 0.0)
+        jer = s_met.get("jer", 0.0)
+        sca = s_met.get("sca_pct", 0.0)
+        print(f"{name:<22} | {d0:>6.2f}%  | {m0:>5.2f}% | {fa0:>5.2f}% | {cf0:>5.2f}% | {d025:>7.2f}%    | {jer:>5.2f}% | {sca:>5.1f}%")
+    print("-" * 110)
+    print(f"[*] Chi tiết phân rã lỗi Collar 0.0s (DER = Miss Rate + False Alarm + Speaker Confusion):")
+    dev_ov = dev_metrics["overall"]
+    test_ov = test_metrics["overall"]
+    print(f"    - Dev Set Overall:   DER = {dev_ov['der_collar0']:>6.2f}%  =  Miss: {dev_ov.get('miss_rate_c0', 0.0):>5.2f}% + FA: {dev_ov.get('false_alarm_c0', 0.0):>5.2f}% + Conf: {dev_ov.get('confusion_c0', 0.0):>5.2f}%")
+    print(f"    - Test Set Overall:  DER = {test_ov['der_collar0']:>6.2f}%  =  Miss: {test_ov.get('miss_rate_c0', 0.0):>5.2f}% + FA: {test_ov.get('false_alarm_c0', 0.0):>5.2f}% + Conf: {test_ov.get('confusion_c0', 0.0):>5.2f}%")
+    print("=" * 110)
 
     print("\n🔍 KẾT QUẢ ĐỐI CHIẾU TIÊU CHÍ SẢN PHẨM (PRODUCTION SLA):")
     for key, crit in criteria_report.items():

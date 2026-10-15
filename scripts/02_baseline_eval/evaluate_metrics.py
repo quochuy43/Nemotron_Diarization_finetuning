@@ -31,19 +31,55 @@ from pyannote.core import Annotation, Segment, Timeline
 from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
 
 
+def resolve_file_path(path_str: str) -> str:
+    """
+    Tự động chuẩn hóa và tìm kiếm file trên đa nền tảng (Windows / Linux Colab):
+    1. Kiểm tra trực tiếp đường dẫn gốc.
+    2. Nếu không tìm thấy, trích xuất đường dẫn tương đối bắt đầu từ 'data/...'
+       và tìm kiếm tương đối so với thư mục làm việc hiện tại hoặc thư mục gốc repo.
+    """
+    if not path_str:
+        return path_str
+    
+    p = Path(path_str)
+    if p.exists():
+        return str(p)
+    
+    # Chuẩn hóa path phân tách bằng dấu /
+    norm_path = path_str.replace("\\", "/")
+    
+    # Tìm kiếm đoạn path bắt đầu từ "data/"
+    if "data/" in norm_path:
+        sub_rel = norm_path[norm_path.find("data/"):]
+        cand_cwd = Path.cwd() / sub_rel
+        if cand_cwd.exists():
+            return str(cand_cwd)
+        # Thử tìm tương đối với repo root (2 cấp trên script)
+        script_repo_root = Path(__file__).resolve().parent.parent.parent
+        cand_repo = script_repo_root / sub_rel
+        if cand_repo.exists():
+            return str(cand_repo)
+        cand_colab = Path("/content/diarization") / sub_rel
+        if cand_colab.exists():
+            return str(cand_colab)
+    
+    return path_str
+
+
 def parse_rttm_file(rttm_path: str, uri: Optional[str] = None) -> Annotation:
     """
     Đọc file RTTM chuẩn NIST 10 cột thành pyannote.core.Annotation.
     Định dạng dòng: SPEAKER <file_id> <chnl> <onset> <duration> <NA> <NA> <speaker_id> <NA> <NA>
     """
-    path_obj = Path(rttm_path)
+    resolved_path = resolve_file_path(rttm_path)
+    path_obj = Path(resolved_path)
     file_uri = uri or path_obj.stem
     annotation = Annotation(uri=file_uri)
     
     if not path_obj.exists():
         return annotation
 
-    with open(rttm_path, "r", encoding="utf-8") as f:
+    with open(resolved_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or not line.startswith("SPEAKER"):
@@ -60,6 +96,23 @@ def parse_rttm_file(rttm_path: str, uri: Optional[str] = None) -> Annotation:
                     continue
                     
     return annotation
+
+
+def extract_der_components(der_obj) -> Dict[str, float]:
+    """
+    Trích xuất chi tiết 3 thành phần lỗi của DER theo chuẩn NIST:
+    DER = Miss Rate (Bỏ sót) + False Alarm (Báo động giả) + Speaker Confusion (Nhầm người nói).
+    """
+    acc = der_obj.accumulated_
+    total_time = acc.get("total", 0.0)
+    if total_time <= 1e-6:
+        return {"der": 0.0, "miss": 0.0, "fa": 0.0, "confusion": 0.0}
+    return {
+        "der": round(abs(der_obj) * 100, 2),
+        "miss": round((acc.get("missed detection", 0.0) / total_time) * 100, 2),
+        "fa": round((acc.get("false alarm", 0.0) / total_time) * 100, 2),
+        "confusion": round((acc.get("confusion", 0.0) / total_time) * 100, 2),
+    }
 
 
 def compute_metrics_for_dataset(
@@ -147,10 +200,10 @@ def compute_metrics_for_dataset(
 
         # Đánh giá đơn lẻ từng file
         f_der_c0_obj = DiarizationErrorRate(collar=collar_main, skip_overlap=False)
-        f_der_c0 = f_der_c0_obj(ref_annot, hyp_annot, uem=uem_timeline)
+        f_der_c0_obj(ref_annot, hyp_annot, uem=uem_timeline)
 
         f_der_c025_obj = DiarizationErrorRate(collar=collar_secondary, skip_overlap=False)
-        f_der_c025 = f_der_c025_obj(ref_annot, hyp_annot, uem=uem_timeline)
+        f_der_c025_obj(ref_annot, hyp_annot, uem=uem_timeline)
 
         f_jer_obj = JaccardErrorRate(collar=collar_main, skip_overlap=False)
         f_jer = f_jer_obj(ref_annot, hyp_annot, uem=uem_timeline)
@@ -177,13 +230,22 @@ def compute_metrics_for_dataset(
                 slice_multi_correct += 1
             slice_multi_abs_errors.append(count_err)
 
+        f_c0_comp = extract_der_components(f_der_c0_obj)
+        f_c025_comp = extract_der_components(f_der_c025_obj)
+
         file_results.append({
             "stem": stem,
             "duration": duration,
             "ref_spk": ref_num_spk,
             "hyp_spk": hyp_num_spk,
-            "der_collar0": round(f_der_c0 * 100, 2),
-            "der_collar025": round(f_der_c025 * 100, 2),
+            "der_collar0": f_c0_comp["der"],
+            "miss_rate_c0": f_c0_comp["miss"],
+            "false_alarm_c0": f_c0_comp["fa"],
+            "confusion_c0": f_c0_comp["confusion"],
+            "der_collar025": f_c025_comp["der"],
+            "miss_rate_c025": f_c025_comp["miss"],
+            "false_alarm_c025": f_c025_comp["fa"],
+            "confusion_c025": f_c025_comp["confusion"],
             "jer": round(f_jer * 100, 2),
             "slice": "2spk_real" if is_2spk else "3to7spk_sim"
         })
@@ -192,18 +254,6 @@ def compute_metrics_for_dataset(
     total_evaluated = len(file_results)
     if total_evaluated == 0:
         raise RuntimeError("Không có file nào được đánh giá! Hãy kiểm tra đường dẫn hypothesis RTTM.")
-
-    def extract_der_components(der_obj):
-        acc = der_obj.accumulated_
-        total_time = acc.get("total", 0.0)
-        if total_time <= 1e-6:
-            return {"der": 0.0, "miss": 0.0, "fa": 0.0, "confusion": 0.0}
-        return {
-            "der": round(abs(der_obj) * 100, 2),
-            "miss": round((acc.get("missed detection", 0.0) / total_time) * 100, 2),
-            "fa": round((acc.get("false alarm", 0.0) / total_time) * 100, 2),
-            "confusion": round((acc.get("confusion", 0.0) / total_time) * 100, 2),
-        }
 
     global_c0 = extract_der_components(der_metric_c0)
     global_c025 = extract_der_components(der_metric_c025)
@@ -235,6 +285,9 @@ def compute_metrics_for_dataset(
         "missing_files": missing_hyp_count,
         "overall": {
             "der_collar0": global_c0["der"],
+            "miss_rate_c0": global_c0["miss"],
+            "false_alarm_c0": global_c0["fa"],
+            "confusion_c0": global_c0["confusion"],
             "der_collar025": global_c025["der"],
             "miss_rate_c025": global_c025["miss"],
             "false_alarm_c025": global_c025["fa"],
@@ -246,7 +299,13 @@ def compute_metrics_for_dataset(
         "slice_2spk_real": {
             "count": slice_2_count,
             "der_collar0": s2_c0["der"],
+            "miss_rate_c0": s2_c0["miss"],
+            "false_alarm_c0": s2_c0["fa"],
+            "confusion_c0": s2_c0["confusion"],
             "der_collar025": s2_c025["der"],
+            "miss_rate_c025": s2_c025["miss"],
+            "false_alarm_c025": s2_c025["fa"],
+            "confusion_c025": s2_c025["confusion"],
             "jer": s2_jer,
             "sca_pct": s2_sca,
             "mae": s2_mae
@@ -254,7 +313,13 @@ def compute_metrics_for_dataset(
         "slice_3to7spk_sim": {
             "count": slice_m_count,
             "der_collar0": sm_c0["der"],
+            "miss_rate_c0": sm_c0["miss"],
+            "false_alarm_c0": sm_c0["fa"],
+            "confusion_c0": sm_c0["confusion"],
             "der_collar025": sm_c025["der"],
+            "miss_rate_c025": sm_c025["miss"],
+            "false_alarm_c025": sm_c025["fa"],
+            "confusion_c025": sm_c025["confusion"],
             "jer": sm_jer,
             "sca_pct": sm_sca,
             "mae": sm_mae
@@ -278,29 +343,34 @@ def compute_metrics_for_dataset(
 
 def print_benchmark_table(summary: Dict[str, Any]):
     """
-    In bảng tổng kết chỉ số chuẩn MLOps ra màn hình console.
+    In bảng tổng kết chỉ số chuẩn MLOps ra màn hình console,
+    hiển thị chi tiết DER và 3 thành phần cấu thành (Miss Rate + False Alarm + Speaker Confusion).
     """
     ov = summary["overall"]
     s2 = summary["slice_2spk_real"]
     sm = summary["slice_3to7spk_sim"]
 
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 110)
     print("📊 BẢNG TỔNG KẾT KẾT QUẢ DIARIZATION BENCHMARK (CHUẨN NIST / NOTSOFAR1)")
-    print("=" * 80)
+    print("=" * 110)
     print(f"[*] Tập dữ liệu:  {summary['manifest']}")
     print(f"[*] Tổng số file: {summary['evaluated_files']} / {summary['total_files']} files")
-    print("-" * 80)
-    print(f"{'LÁT CẮT (SLICE)':<22} | {'SỐ FILE':<8} | {'DER (Collar 0s)':<16} | {'DER (0.25s)':<12} | {'JER':<8} | {'SCA':<7} | {'MAE':<5}")
-    print("-" * 80)
-    print(f"{'1. TỔNG THỂ (Overall)':<22} | {summary['evaluated_files']:<8} | {ov['der_collar0']:>6.2f}%         | {ov['der_collar025']:>6.2f}%    | {ov['jer']:>5.2f}% | {ov['sca_pct']:>5.1f}% | {ov['mae']:>4.2f}")
-    print(f"{'2. 2 Người (Real)':<22} | {s2['count']:<8} | {s2['der_collar0']:>6.2f}%         | {s2['der_collar025']:>6.2f}%    | {s2['jer']:>5.2f}% | {s2['sca_pct']:>5.1f}% | {s2['mae']:>4.2f}")
-    print(f"{'3. 3-7 Người (Simulated)':<22} | {sm['count']:<8} | {sm['der_collar0']:>6.2f}%         | {sm['der_collar025']:>6.2f}%    | {sm['jer']:>5.2f}% | {sm['sca_pct']:>5.1f}% | {sm['mae']:>4.2f}")
-    print("-" * 80)
-    print(f"[*] Chi tiết thành phần lỗi (Collar 0.25s):")
-    print(f"    - Missed Speech (Bỏ sót giọng nói):      {ov['miss_rate_c025']:>6.2f}%")
-    print(f"    - False Alarm (Báo động giả):            {ov['false_alarm_c025']:>6.2f}%")
-    print(f"    - Speaker Confusion (Nhầm người nói):    {ov['confusion_c025']:>6.2f}%")
-    print("=" * 80 + "\n")
+    print("-" * 110)
+    print(f"{'LÁT CẮT (SLICE)':<20} | {'FILES':<5} | {'DER (c0)':<9} | {'Miss':<7} | {'FA':<7} | {'Conf':<7} | {'DER (c0.25)':<11} | {'JER':<7} | {'SCA':<6} | {'MAE':<4}")
+    print("-" * 110)
+    print(f"{'1. TỔNG THỂ (Overall)':<20} | {summary['evaluated_files']:<5} | {ov['der_collar0']:>6.2f}%  | {ov.get('miss_rate_c0', 0.0):>5.2f}% | {ov.get('false_alarm_c0', 0.0):>5.2f}% | {ov.get('confusion_c0', 0.0):>5.2f}% | {ov['der_collar025']:>7.2f}%    | {ov['jer']:>5.2f}% | {ov['sca_pct']:>5.1f}% | {ov['mae']:>4.2f}")
+    print(f"{'2. 2 Người (Real)':<20} | {s2['count']:<5} | {s2['der_collar0']:>6.2f}%  | {s2.get('miss_rate_c0', 0.0):>5.2f}% | {s2.get('false_alarm_c0', 0.0):>5.2f}% | {s2.get('confusion_c0', 0.0):>5.2f}% | {s2['der_collar025']:>7.2f}%    | {s2['jer']:>5.2f}% | {s2['sca_pct']:>5.1f}% | {s2['mae']:>4.2f}")
+    print(f"{'3. 3-7 Người (Sim)':<20} | {sm['count']:<5} | {sm['der_collar0']:>6.2f}%  | {sm.get('miss_rate_c0', 0.0):>5.2f}% | {sm.get('false_alarm_c0', 0.0):>5.2f}% | {sm.get('confusion_c0', 0.0):>5.2f}% | {sm['der_collar025']:>7.2f}%    | {sm['jer']:>5.2f}% | {sm['sca_pct']:>5.1f}% | {sm['mae']:>4.2f}")
+    print("-" * 110)
+    print(f"[*] Chi tiết phân rã lỗi Collar 0.0s (DER = Miss Rate + False Alarm + Speaker Confusion):")
+    print(f"    - Tổng thể:   DER = {ov['der_collar0']:>6.2f}%  =  Miss: {ov.get('miss_rate_c0', 0.0):>5.2f}% + FA: {ov.get('false_alarm_c0', 0.0):>5.2f}% + Confusion: {ov.get('confusion_c0', 0.0):>5.2f}%")
+    print(f"    - 2 Người:    DER = {s2['der_collar0']:>6.2f}%  =  Miss: {s2.get('miss_rate_c0', 0.0):>5.2f}% + FA: {s2.get('false_alarm_c0', 0.0):>5.2f}% + Confusion: {s2.get('confusion_c0', 0.0):>5.2f}%")
+    print(f"    - 3-7 Người:  DER = {sm['der_collar0']:>6.2f}%  =  Miss: {sm.get('miss_rate_c0', 0.0):>5.2f}% + FA: {sm.get('false_alarm_c0', 0.0):>5.2f}% + Confusion: {sm.get('confusion_c0', 0.0):>5.2f}%")
+    print(f"[*] Chi tiết phân rã lỗi Collar 0.25s (Tham chiếu NIST):")
+    print(f"    - Tổng thể:   DER = {ov['der_collar025']:>6.2f}%  =  Miss: {ov['miss_rate_c025']:>5.2f}% + FA: {ov['false_alarm_c025']:>5.2f}% + Confusion: {ov['confusion_c025']:>5.2f}%")
+    print(f"    - 2 Người:    DER = {s2['der_collar025']:>6.2f}%  =  Miss: {s2.get('miss_rate_c025', 0.0):>5.2f}% + FA: {s2.get('false_alarm_c025', 0.0):>5.2f}% + Confusion: {s2.get('confusion_c025', 0.0):>5.2f}%")
+    print(f"    - 3-7 Người:  DER = {sm['der_collar025']:>6.2f}%  =  Miss: {sm.get('miss_rate_c025', 0.0):>5.2f}% + FA: {sm.get('false_alarm_c025', 0.0):>5.2f}% + Confusion: {sm.get('confusion_c025', 0.0):>5.2f}%")
+    print("=" * 110 + "\n")
 
 
 if __name__ == "__main__":

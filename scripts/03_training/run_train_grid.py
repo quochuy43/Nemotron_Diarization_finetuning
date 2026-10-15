@@ -48,7 +48,7 @@ baseline_eval_dir = scripts_dir / "02_baseline_eval"
 if str(baseline_eval_dir) not in sys.path:
     sys.path.insert(0, str(baseline_eval_dir))
 
-from evaluate_metrics import parse_rttm_file, compute_metrics_for_dataset
+from evaluate_metrics import parse_rttm_file, compute_metrics_for_dataset, resolve_file_path
 from tune_postprocessing import binarize_and_filter_probs, write_segments_to_rttm
 
 
@@ -77,7 +77,7 @@ class NemotronDiarizationDataset(Dataset):
         self.is_training = is_training
         self.items = []
 
-        manifest_file = Path(manifest_path)
+        manifest_file = Path(resolve_file_path(manifest_path))
         if not manifest_file.exists():
             raise FileNotFoundError(f"Không tìm thấy manifest tại: {manifest_path}")
 
@@ -135,8 +135,8 @@ class NemotronDiarizationDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.items[idx]
-        wav_path = item["audio_filepath"]
-        rttm_path = item["rttm_filepath"]
+        wav_path = resolve_file_path(item["audio_filepath"])
+        rttm_path = resolve_file_path(item["rttm_filepath"])
         total_duration = float(item.get("duration", 0.0))
 
         # Đọc thông tin file âm thanh
@@ -354,8 +354,9 @@ def evaluate_checkpoint_on_dev(
     temp_rttm_dir = temp_dir / "rttm"
     temp_rttm_dir.mkdir(parents=True, exist_ok=True)
 
+    dev_manifest_p = resolve_file_path(dev_manifest)
     manifest_items = []
-    with open(dev_manifest, "r", encoding="utf-8") as f:
+    with open(dev_manifest_p, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -366,7 +367,7 @@ def evaluate_checkpoint_on_dev(
 
     with torch.inference_mode():
         for item in manifest_items:
-            wav_path = item["audio_filepath"]
+            wav_path = resolve_file_path(item["audio_filepath"])
             stem = Path(wav_path).stem
             wav_data, sr = sf.read(wav_path)
             if wav_data.ndim > 1:
@@ -389,7 +390,7 @@ def evaluate_checkpoint_on_dev(
 
     # Tính toán chỉ số NIST
     metrics = compute_metrics_for_dataset(
-        manifest_path=dev_manifest,
+        manifest_path=str(dev_manifest_p),
         hyp_rttm_dir=str(temp_rttm_dir),
         collar_main=0.0,
         collar_secondary=0.25,
@@ -405,9 +406,25 @@ def evaluate_checkpoint_on_dev(
 
     return {
         "der_collar0": metrics["overall"]["der_collar0"],
+        "miss_rate_c0": metrics["overall"].get("miss_rate_c0", 0.0),
+        "false_alarm_c0": metrics["overall"].get("false_alarm_c0", 0.0),
+        "confusion_c0": metrics["overall"].get("confusion_c0", 0.0),
+
         "der_collar025": metrics["overall"]["der_collar025"],
+        "miss_rate_c025": metrics["overall"].get("miss_rate_c025", 0.0),
+        "false_alarm_c025": metrics["overall"].get("false_alarm_c025", 0.0),
+        "confusion_c025": metrics["overall"].get("confusion_c025", 0.0),
+
         "der_2spk_c0": metrics["slice_2spk_real"]["der_collar0"],
+        "miss_2spk_c0": metrics["slice_2spk_real"].get("miss_rate_c0", 0.0),
+        "fa_2spk_c0": metrics["slice_2spk_real"].get("false_alarm_c0", 0.0),
+        "conf_2spk_c0": metrics["slice_2spk_real"].get("confusion_c0", 0.0),
+
         "der_3to7spk_c0": metrics["slice_3to7spk_sim"]["der_collar0"],
+        "miss_3to7spk_c0": metrics["slice_3to7spk_sim"].get("miss_rate_c0", 0.0),
+        "fa_3to7spk_c0": metrics["slice_3to7spk_sim"].get("false_alarm_c0", 0.0),
+        "conf_3to7spk_c0": metrics["slice_3to7spk_sim"].get("confusion_c0", 0.0),
+
         "jer": metrics["overall"]["jer"],
         "sca_pct": metrics["overall"]["sca_pct"],
         "mae": metrics["overall"]["mae"]
@@ -448,8 +465,8 @@ def run_training_grid(
         raise ValueError(f"Phiên bản {version} không hợp lệ! Chọn trong: {list(cfg['experiment_versions'].keys())}")
 
     ver_cfg = cfg["experiment_versions"][ver_key]
-    train_manifest = override_manifest or ver_cfg["manifest"]
-    dev_manifest = cfg["validation"]["manifest"]
+    train_manifest = resolve_file_path(override_manifest or ver_cfg["manifest"])
+    dev_manifest = resolve_file_path(cfg["validation"]["manifest"])
 
     total_epochs = epochs or ver_cfg["epochs"]
     lr = learning_rate or float(cfg["training"]["optimizer"]["learning_rate"])
@@ -579,7 +596,13 @@ def run_training_grid(
                     "epoch": epoch,
                     "loss": round(loss.item() * grad_accum, 4),
                     "der_collar0": cur_der,
+                    "miss_rate_c0": dev_metrics["miss_rate_c0"],
+                    "false_alarm_c0": dev_metrics["false_alarm_c0"],
+                    "confusion_c0": dev_metrics["confusion_c0"],
                     "der_collar025": dev_metrics["der_collar025"],
+                    "miss_rate_c025": dev_metrics["miss_rate_c025"],
+                    "false_alarm_c025": dev_metrics["false_alarm_c025"],
+                    "confusion_c025": dev_metrics["confusion_c025"],
                     "der_2spk_c0": dev_metrics["der_2spk_c0"],
                     "der_3to7spk_c0": dev_metrics["der_3to7spk_c0"],
                     "jer": dev_metrics["jer"],
@@ -600,7 +623,7 @@ def run_training_grid(
                     "version": version
                 }, cp_file_path)
 
-                print(f"  [+] Đạt Dev DER (Collar 0s): {cur_der:.2f}% | 2spk: {dev_metrics['der_2spk_c0']:.2f}% | 3-7spk: {dev_metrics['der_3to7spk_c0']:.2f}%")
+                print(f"  [+] Đạt Dev DER (Collar 0s): {cur_der:.2f}% (Miss: {dev_metrics['miss_rate_c0']:.2f}% | FA: {dev_metrics['false_alarm_c0']:.2f}% | Conf: {dev_metrics['confusion_c0']:.2f}%) | 2spk: {dev_metrics['der_2spk_c0']:.2f}% | 3-7spk: {dev_metrics['der_3to7spk_c0']:.2f}%")
                 print(f"  [+] Đã lưu checkpoint tại: {cp_file_path}")
 
                 # Cập nhật danh sách Top-5 Checkpoints
@@ -626,9 +649,12 @@ def run_training_grid(
     print("\n" + "=" * 80)
     print(f"🎉 HOÀN TẤT HUẤN LUYỆN PHIÊN BẢN {version.upper()} TRONG {elapsed/60:.2f} PHÚT!")
     print("=" * 80)
-    print("🏆 TOP 3 CHECKPOINTS TỐT NHẤT TRÊN TẬP DEV:")
-    for rank, cp in enumerate(top_checkpoints[:3], 1):
-        print(f"  #{rank}: {cp['checkpoint_file']} (Step {cp['step']}) -> DER Collar 0s: {cp['der_collar0']}% | 3-7spk: {cp['der_3to7spk_c0']}%")
+    print("🏆 TOP 5 CHECKPOINTS TỐT NHẤT TRÊN TẬP DEV:")
+    for rank, cp in enumerate(top_checkpoints[:5], 1):
+        miss_s = cp.get('miss_rate_c0', 0.0)
+        fa_s = cp.get('false_alarm_c0', 0.0)
+        conf_s = cp.get('confusion_c0', 0.0)
+        print(f"  #{rank}: {cp['checkpoint_file']} (Step {cp['step']}) -> DER Tổng: {cp['der_collar0']}% [Miss: {miss_s:.2f}% | FA: {fa_s:.2f}% | Conf: {conf_s:.2f}%] | 2spk: {cp['der_2spk_c0']}% | 3-7spk: {cp['der_3to7spk_c0']}%")
     print("=" * 80)
 
     return top_checkpoints, convergence_log
@@ -641,7 +667,7 @@ def run_training_grid(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Huấn luyện Grid Search Nemotron-3 Diarization 0.32s")
     parser.add_argument("--config", type=str, default="scripts/03_training/configs/sortformer_streaming_032s.yaml", help="Đường dẫn file YAML")
-    parser.add_argument("--version", type=str, default="v1_1", choices=["v1_0", "v1_1", "v1_2", "v1_3"], help="Phiên bản huấn luyện")
+    parser.add_argument("--version", type=str, default="v1_0", choices=["v1_0", "v1.0", "v1_1", "v1.1", "v1_2", "v1.2", "v1_3", "v1.3"], help="Phiên bản huấn luyện")
     parser.add_argument("--manifest", type=str, default=None, help="Ghi đè train manifest")
     parser.add_argument("--output_dir", type=str, default=None, help="Thư mục xuất checkpoints")
     parser.add_argument("--epochs", type=int, default=None, help="Số epochs")
