@@ -165,11 +165,12 @@ Với mỗi version huấn luyện (từ v1.0 đến v2.0):
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **v0.1 (Zero-shot)** | - | Baseline | 20.89% [3.18 / 6.42 / 11.29] | 18.77% | 29.61% | --.--% | Đã đo Dev baseline |
 | **v0.2 (Post-proc)** | - | Best Thresh | 20.45% [3.50 / 5.20 / 11.75] | 18.40% | 28.85% | --.--% | Đã tối ưu siêu tham số |
-| **v1.0 (Sim only)** | 0 : 100 | Target: 50 CPs | *Đang chờ thực thi* | *--.--%* | *--.--%* | *--.--%* | 🚀 **Sẵn sàng huấn luyện** |
-| **v1.1 (Ratio 1:3)** | 1 : 3 | CP_020 (Step 400) | **12.59%** [3.45 / 4.10 / 5.04] | **18.34%** | **5.66%** | --.--% | ✅ Hoàn tất huấn luyện (A100) |
+| **v1.0 (Sim only)** | 0 : 100 | CP_037 (Step 2812) | **18.84%** [4.73 / 13.10 / 1.01] | **21.76%** | **5.93%** | **17.31%** (SWA) | ✅ Hoàn tất huấn luyện & SWA |
+| **v1.1 (Ratio 1:3)** | 1 : 3 | CP_020 (Step 400) | **16.00%** [4.65 / 10.74 / 0.61] | **18.34%** | **5.66%** | **16.02%** (SWA) | ✅ Hoàn tất huấn luyện & SWA |
 | **v1.2 (Ratio 1:5)** | 1 : 5 | CP_xx | --.--% | --.--% | --.--% | --.--% | ✅ Manifest đã sẵn sàng |
 | **v1.3 (Ratio 1:8)** | 1 : 8 | CP_xx | --.--% | --.--% | --.--% | --.--% | ✅ Manifest đã sẵn sàng |
-| **v2.0 (Final SWA)** | Best Ratio (1:3) | SWA (Top 5 CPs) | **12.64%** (Collar 0.25s: 7.91%) | **18.42%** | **5.67%** | **16.02%** (c0.25: 11.58%) | 🏆 **Xuất xưởng đạt chuẩn** |
+| **v1_0_swa_model** | 0 : 100 | SWA (Top 5 CPs) | **18.88%** (Collar 0.25s: 13.01%) | **21.78%** | **6.02%** | **17.31%** (c0.25: 12.59%) | 🏆 **Xuất xưởng đạt chuẩn** |
+| **v1_1_swa_model** | 1 : 3 | SWA (Top 5 CPs) | **16.18%** (Collar 0.25s: 10.54%) | **18.58%** | **5.53%** | **16.02%** (c0.25: 11.58%) | 🏆 **Xuất xưởng đạt chuẩn** |
 
 ### Tiêu chí chốt mô hình Production (Nghiệm thu v2.0):
 1. **Tiêu chí 1 (Cải thiện DER)**: Test DER (Collar 0s) đạt **16.02%**, cải thiện **4.43%** so với baseline v0.2 ($20.45\%$) $\to$ **✅ ĐẠT** (Vượt mục tiêu $\ge 1.5\%$).
