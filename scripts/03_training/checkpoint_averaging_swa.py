@@ -183,7 +183,8 @@ def check_production_criteria(
 def run_checkpoint_averaging_and_benchmark(
     checkpoints_dir: str = "experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints",
     top_checkpoints_json: Optional[str] = None,
-    output_dir: str = "experiments/checkpoints/v2_0_swa_model",
+    output_dir: Optional[str] = None,
+    model_tag: Optional[str] = None,
     top_k: int = 5,
     dev_manifest: str = "data/manifests/dev_manifest.json",
     test_manifest: str = "data/manifests/test_manifest.json",
@@ -193,21 +194,44 @@ def run_checkpoint_averaging_and_benchmark(
     limit_files: Optional[int] = None
 ):
     """
-    Thực hiện quy trình tạo mô hình SWA v2.0 và nghiệm thu test set đóng băng.
+    Thực hiện quy trình tạo mô hình SWA và nghiệm thu test set đóng băng.
+    Tự động phân tách thư mục theo từng phiên bản để chống xung đột (conflict).
     """
-    out_dir_p = Path(output_dir)
-    out_dir_p.mkdir(parents=True, exist_ok=True)
     cp_dir_p = Path(checkpoints_dir)
+    parent_exp = cp_dir_p.parent.name if cp_dir_p.name == "checkpoints" else cp_dir_p.name
+
+    # Tự động xác định tên version tag
+    if model_tag:
+        tag = model_tag
+    elif "v1_0" in parent_exp or "v1.0" in parent_exp:
+        tag = "v1.0_SWA"
+    elif "v1_1" in parent_exp or "v1.1" in parent_exp:
+        tag = "v1.1_SWA"
+    elif "v1_2" in parent_exp or "v1.2" in parent_exp:
+        tag = "v1.2_SWA"
+    elif "v1_3" in parent_exp or "v1.3" in parent_exp:
+        tag = "v1.3_SWA"
+    else:
+        tag = parent_exp
+
+    # Tự động sinh output_dir riêng biệt cho từng version nếu không chỉ định rõ
+    if output_dir is None:
+        out_dir_p = cp_dir_p.parent.parent / f"{parent_exp}_swa_model"
+    else:
+        out_dir_p = Path(output_dir)
+
+    out_dir_p.mkdir(parents=True, exist_ok=True)
 
     dev_manifest = resolve_file_path(dev_manifest)
     test_manifest = resolve_file_path(test_manifest)
 
     print("\n" + "=" * 80)
-    print("🏆 BẮT ĐẦU CHECKPOINT AVERAGING (SWA v2.0) & NGHIỆM THU TEST SET")
+    print(f"🏆 BẮT ĐẦU CHECKPOINT AVERAGING ({tag}) & NGHIỆM THU TEST SET")
     print("=" * 80)
     print(f"[*] Thư mục Checkpoints: {checkpoints_dir}")
+    print(f"[*] Phiên bản (Tag):     {tag}")
     print(f"[*] Số lượng Top-K:      {top_k}")
-    print(f"[*] Thư mục xuất model:  {output_dir}")
+    print(f"[*] Thư mục xuất model:  {out_dir_p}")
     print(f"[*] Tập Dev Set:         {dev_manifest}")
     print(f"[*] Tập Test Set:        {test_manifest}")
     print(f"[*] Thiết bị (Device):   {device}")
@@ -248,14 +272,18 @@ def run_checkpoint_averaging_and_benchmark(
     model = model.to(device)
     model.eval()
 
-    # 4. Lưu mô hình SWA chính thức
-    final_model_path = out_dir_p / "model_swa_v2_0.pt"
-    torch.save({
+    # 4. Lưu mô hình SWA
+    final_model_path = out_dir_p / "model_swa.pt"
+    tag_model_path = out_dir_p / f"model_swa_{tag.replace('.', '_')}.pt"
+    save_payload = {
         "model_state_dict": model.state_dict(),
         "num_averaged_checkpoints": len(candidate_checkpoints),
-        "source_checkpoints": [str(c) for c in candidate_checkpoints]
-    }, final_model_path)
-    print(f"[+] Đã lưu trọng số mô hình SWA v2.0 thành công tại: {final_model_path}")
+        "source_checkpoints": [str(c) for c in candidate_checkpoints],
+        "model_tag": tag
+    }
+    torch.save(save_payload, final_model_path)
+    torch.save(save_payload, tag_model_path)
+    print(f"[+] Đã lưu trọng số mô hình {tag} thành công tại: {final_model_path}")
 
     # 5. Đọc cấu hình siêu tham số hậu xử lý tốt nhất từ v0.2
     post_proc_cfg_file = Path("experiments/baselines/post_proc_v0_2/best_hyperparameters.json")
@@ -307,7 +335,7 @@ def run_checkpoint_averaging_and_benchmark(
 
     # 9. Tổng hợp báo cáo nghiệm thu
     final_report = {
-        "model_version": "v2.0_Final_SWA",
+        "model_version": tag,
         "averaged_checkpoints": [str(c) for c in candidate_checkpoints],
         "dev_evaluation": dev_metrics,
         "test_evaluation": test_metrics,
@@ -320,7 +348,7 @@ def run_checkpoint_averaging_and_benchmark(
 
     # 10. In bảng nghiệm thu Leaderboard
     print("\n" + "=" * 110)
-    print("📊 BẢNG TỔNG KẾT NGHIỆM THU MÔ HÌNH XUẤT XƯỞNG (FINAL SWA v2.0)")
+    print(f"📊 BẢNG TỔNG KẾT NGHIỆM THU MÔ HÌNH SWA ({tag})")
     print("=" * 110)
     print(f"{'TẬP DỮ LIỆU':<22} | {'DER (c0)':<9} | {'Miss':<7} | {'FA':<7} | {'Conf':<7} | {'DER (c0.25)':<11} | {'JER':<7} | {'SCA':<6}")
     print("-" * 110)
@@ -360,10 +388,11 @@ def run_checkpoint_averaging_and_benchmark(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tạo mô hình SWA v2.0 và nghiệm thu Test Set")
+    parser = argparse.ArgumentParser(description="Tạo mô hình SWA và nghiệm thu Test Set")
     parser.add_argument("--checkpoints_dir", type=str, default="experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints", help="Thư mục chứa checkpoints")
     parser.add_argument("--top_json", type=str, default=None, help="File top_checkpoints.json")
-    parser.add_argument("--output_dir", type=str, default="experiments/checkpoints/v2_0_swa_model", help="Thư mục xuất kết quả")
+    parser.add_argument("--output_dir", type=str, default=None, help="Thư mục xuất kết quả (Mặc định tự động tạo theo tên version để chống ghi đè)")
+    parser.add_argument("--model_tag", type=str, default=None, help="Nhãn phiên bản mô hình (ví dụ: v1.0_SWA, v1.1_SWA, hoặc v2.0_Final_SWA)")
     parser.add_argument("--top_k", type=int, default=5, help="Số lượng checkpoint trung bình")
     parser.add_argument("--dev_manifest", type=str, default="data/manifests/dev_manifest.json", help="Dev manifest")
     parser.add_argument("--test_manifest", type=str, default="data/manifests/test_manifest.json", help="Test manifest đóng băng")
@@ -377,6 +406,7 @@ if __name__ == "__main__":
         checkpoints_dir=args.checkpoints_dir,
         top_checkpoints_json=args.top_json,
         output_dir=args.output_dir,
+        model_tag=args.model_tag,
         top_k=args.top_k,
         dev_manifest=args.dev_manifest,
         test_manifest=args.test_manifest,
