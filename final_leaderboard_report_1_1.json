@@ -1,0 +1,959 @@
+{
+  "model_version": "v2.0_Final_SWA",
+  "averaged_checkpoints": [
+    "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints/checkpoint_020_step_400.pt",
+    "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints/checkpoint_019_step_380.pt",
+    "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints/checkpoint_021_step_420.pt",
+    "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints/checkpoint_044_step_880.pt",
+    "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3/checkpoints/checkpoint_018_step_360.pt"
+  ],
+  "dev_evaluation": {
+    "manifest": "data/manifests/dev_manifest.json",
+    "hyp_dir": "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v2_0_swa_model/dev_rttm",
+    "total_files": 43,
+    "evaluated_files": 43,
+    "missing_files": 0,
+    "overall": {
+      "der_collar0": 16.18,
+      "der_collar025": 10.54,
+      "miss_rate_c025": 4.48,
+      "false_alarm_c025": 5.45,
+      "confusion_c025": 0.61,
+      "jer": 10.96,
+      "sca_pct": 90.7,
+      "mae": 0.09
+    },
+    "slice_2spk_real": {
+      "count": 22,
+      "der_collar0": 18.58,
+      "der_collar025": 12.35,
+      "jer": 15.21,
+      "sca_pct": 95.45,
+      "mae": 0.05
+    },
+    "slice_3to7spk_sim": {
+      "count": 21,
+      "der_collar0": 5.53,
+      "der_collar025": 3.82,
+      "jer": 8.99,
+      "sca_pct": 85.71,
+      "mae": 0.14
+    },
+    "file_details": [
+      {
+        "stem": "callhome_00100",
+        "duration": 613.29,
+        "ref_spk": 2,
+        "hyp_spk": 3,
+        "der_collar0": 8.53,
+        "der_collar025": 5.31,
+        "jer": 8.54,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00101",
+        "duration": 615.1,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 15.39,
+        "der_collar025": 8.08,
+        "jer": 16.15,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00102",
+        "duration": 613.38,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 9.75,
+        "der_collar025": 3.37,
+        "jer": 9.3,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00103",
+        "duration": 300.67,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 28.94,
+        "der_collar025": 20.38,
+        "jer": 27.16,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00104",
+        "duration": 614.66,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 13.3,
+        "der_collar025": 9.09,
+        "jer": 13.22,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00105",
+        "duration": 300.06,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 10.03,
+        "der_collar025": 4.43,
+        "jer": 9.58,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00106",
+        "duration": 300.67,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 16.55,
+        "der_collar025": 8.21,
+        "jer": 15.91,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "callhome_00107",
+        "duration": 612.03,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 12.5,
+        "der_collar025": 8.88,
+        "jer": 12.06,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00108",
+        "duration": 610.24,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 12.16,
+        "der_collar025": 8.58,
+        "jer": 12.42,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00109",
+        "duration": 613.03,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 11.07,
+        "der_collar025": 9.06,
+        "jer": 10.64,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callfriend_jpn_0025",
+        "duration": 1799.5,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 27.37,
+        "der_collar025": 15.81,
+        "jer": 26.1,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callfriend_jpn_0026",
+        "duration": 1798.57,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 34.21,
+        "der_collar025": 20.14,
+        "jer": 27.6,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callfriend_jpn_0027",
+        "duration": 1796.57,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 35.47,
+        "der_collar025": 19.55,
+        "jer": 27.43,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue01",
+        "duration": 675.78,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 15.37,
+        "der_collar025": 12.21,
+        "jer": 13.3,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue02",
+        "duration": 707.63,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 16.21,
+        "der_collar025": 12.86,
+        "jer": 13.39,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue03",
+        "duration": 762.05,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.64,
+        "der_collar025": 11.43,
+        "jer": 13.29,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue04",
+        "duration": 759.47,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 13.04,
+        "der_collar025": 9.75,
+        "jer": 11.5,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue05",
+        "duration": 736.09,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 18.76,
+        "der_collar025": 16.62,
+        "jer": 18.85,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency01",
+        "duration": 847.68,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.89,
+        "der_collar025": 12.26,
+        "jer": 12.48,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency02",
+        "duration": 735.57,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 12.68,
+        "der_collar025": 9.97,
+        "jer": 11.0,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency03",
+        "duration": 736.11,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 16.78,
+        "der_collar025": 13.91,
+        "jer": 15.64,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency04",
+        "duration": 1122.65,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 15.07,
+        "der_collar025": 11.87,
+        "jer": 14.49,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency05",
+        "duration": 811.07,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 13.47,
+        "der_collar025": 10.68,
+        "jer": 10.58,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "sim_jvs_00001",
+        "duration": 181.33,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 2.12,
+        "der_collar025": 0.67,
+        "jer": 2.07,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00008",
+        "duration": 183.73,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 1.69,
+        "der_collar025": 0.76,
+        "jer": 1.41,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00011",
+        "duration": 186.91,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 1.32,
+        "der_collar025": 0.57,
+        "jer": 0.93,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00013",
+        "duration": 183.0,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 1.7,
+        "der_collar025": 0.88,
+        "jer": 1.37,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00017",
+        "duration": 188.57,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 2.11,
+        "der_collar025": 1.05,
+        "jer": 2.09,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00023",
+        "duration": 188.15,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 2.16,
+        "der_collar025": 0.89,
+        "jer": 2.16,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00024",
+        "duration": 181.99,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 1.92,
+        "der_collar025": 0.82,
+        "jer": 1.91,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00025",
+        "duration": 181.61,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 3.63,
+        "der_collar025": 2.85,
+        "jer": 5.47,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00027",
+        "duration": 184.91,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 6.26,
+        "der_collar025": 5.49,
+        "jer": 9.01,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00028",
+        "duration": 187.54,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 2.9,
+        "der_collar025": 1.88,
+        "jer": 2.59,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00003",
+        "duration": 185.66,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 5.74,
+        "der_collar025": 4.39,
+        "jer": 7.48,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00014",
+        "duration": 183.38,
+        "ref_spk": 6,
+        "hyp_spk": 7,
+        "der_collar0": 8.47,
+        "der_collar025": 7.6,
+        "jer": 11.46,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00015",
+        "duration": 189.24,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 3.9,
+        "der_collar025": 2.52,
+        "jer": 3.68,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00020",
+        "duration": 192.44,
+        "ref_spk": 6,
+        "hyp_spk": 6,
+        "der_collar0": 4.45,
+        "der_collar025": 2.88,
+        "jer": 9.14,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00029",
+        "duration": 186.77,
+        "ref_spk": 6,
+        "hyp_spk": 6,
+        "der_collar0": 4.75,
+        "der_collar025": 4.23,
+        "jer": 5.12,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00030",
+        "duration": 184.14,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 1.49,
+        "der_collar025": 0.86,
+        "jer": 1.87,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00031",
+        "duration": 182.58,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 3.6,
+        "der_collar025": 2.24,
+        "jer": 3.89,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00040",
+        "duration": 185.39,
+        "ref_spk": 7,
+        "hyp_spk": 6,
+        "der_collar0": 13.89,
+        "der_collar025": 12.37,
+        "jer": 31.46,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00043",
+        "duration": 181.75,
+        "ref_spk": 5,
+        "hyp_spk": 4,
+        "der_collar0": 10.7,
+        "der_collar025": 8.95,
+        "jer": 28.02,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00050",
+        "duration": 183.98,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 11.01,
+        "der_collar025": 9.69,
+        "jer": 14.22,
+        "slice": "3to7spk_sim"
+      }
+    ]
+  },
+  "test_evaluation": {
+    "manifest": "data/manifests/test_manifest.json",
+    "hyp_dir": "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v2_0_swa_model/test_rttm",
+    "total_files": 43,
+    "evaluated_files": 43,
+    "missing_files": 0,
+    "overall": {
+      "der_collar0": 16.02,
+      "der_collar025": 11.58,
+      "miss_rate_c025": 6.22,
+      "false_alarm_c025": 3.48,
+      "confusion_c025": 1.88,
+      "jer": 12.83,
+      "sca_pct": 88.37,
+      "mae": 0.12
+    },
+    "slice_2spk_real": {
+      "count": 20,
+      "der_collar0": 17.27,
+      "der_collar025": 12.34,
+      "jer": 16.05,
+      "sca_pct": 95.0,
+      "mae": 0.05
+    },
+    "slice_3to7spk_sim": {
+      "count": 23,
+      "der_collar0": 12.56,
+      "der_collar025": 9.74,
+      "jer": 11.66,
+      "sca_pct": 82.61,
+      "mae": 0.17
+    },
+    "file_details": [
+      {
+        "stem": "callhome_00110",
+        "duration": 607.45,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 9.74,
+        "der_collar025": 3.32,
+        "jer": 9.49,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00111",
+        "duration": 609.28,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.83,
+        "der_collar025": 11.7,
+        "jer": 15.38,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00112",
+        "duration": 601.47,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 26.13,
+        "der_collar025": 18.48,
+        "jer": 39.7,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "callhome_00113",
+        "duration": 301.56,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.18,
+        "der_collar025": 9.51,
+        "jer": 13.02,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00114",
+        "duration": 614.18,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 7.39,
+        "der_collar025": 3.51,
+        "jer": 7.08,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00115",
+        "duration": 600.1,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 12.33,
+        "der_collar025": 6.0,
+        "jer": 11.85,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00116",
+        "duration": 731.41,
+        "ref_spk": 5,
+        "hyp_spk": 4,
+        "der_collar0": 21.63,
+        "der_collar025": 17.6,
+        "jer": 39.08,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "callhome_00117",
+        "duration": 609.91,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 10.07,
+        "der_collar025": 3.64,
+        "jer": 9.94,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00118",
+        "duration": 300.6,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 29.55,
+        "der_collar025": 28.05,
+        "jer": 25.15,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callhome_00119",
+        "duration": 613.53,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 29.27,
+        "der_collar025": 27.64,
+        "jer": 49.71,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "callfriend_jpn_0028",
+        "duration": 1053.77,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 27.24,
+        "der_collar025": 16.36,
+        "jer": 24.74,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callfriend_jpn_0029",
+        "duration": 193.95,
+        "ref_spk": 2,
+        "hyp_spk": 3,
+        "der_collar0": 32.19,
+        "der_collar025": 15.09,
+        "jer": 26.69,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "callfriend_jpn_0030",
+        "duration": 1799.53,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 27.17,
+        "der_collar025": 13.65,
+        "jer": 22.87,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue06",
+        "duration": 756.61,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 18.64,
+        "der_collar025": 16.69,
+        "jer": 18.97,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue07",
+        "duration": 695.74,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.9,
+        "der_collar025": 12.83,
+        "jer": 14.21,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue08",
+        "duration": 709.16,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 20.33,
+        "der_collar025": 18.31,
+        "jer": 20.15,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue09",
+        "duration": 706.24,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 17.05,
+        "der_collar025": 14.24,
+        "jer": 16.79,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-themed-dialogue10",
+        "duration": 747.07,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 22.21,
+        "der_collar025": 20.54,
+        "jer": 21.85,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency06",
+        "duration": 744.47,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 13.2,
+        "der_collar025": 10.36,
+        "jer": 11.21,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency07",
+        "duration": 691.39,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 12.44,
+        "der_collar025": 9.95,
+        "jer": 11.66,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency08",
+        "duration": 688.41,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 13.59,
+        "der_collar025": 10.88,
+        "jer": 12.61,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency09",
+        "duration": 784.62,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.18,
+        "der_collar025": 11.52,
+        "jer": 13.79,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "japanese-roleplay-travel-agency10",
+        "duration": 739.71,
+        "ref_spk": 2,
+        "hyp_spk": 2,
+        "der_collar0": 14.13,
+        "der_collar025": 10.91,
+        "jer": 13.56,
+        "slice": "2spk_real"
+      },
+      {
+        "stem": "sim_jvs_00032",
+        "duration": 190.49,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 1.26,
+        "der_collar025": 0.35,
+        "jer": 1.12,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00034",
+        "duration": 182.65,
+        "ref_spk": 4,
+        "hyp_spk": 5,
+        "der_collar0": 14.96,
+        "der_collar025": 13.7,
+        "jer": 15.2,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00037",
+        "duration": 184.48,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 2.11,
+        "der_collar025": 0.86,
+        "jer": 2.04,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00038",
+        "duration": 185.29,
+        "ref_spk": 4,
+        "hyp_spk": 5,
+        "der_collar0": 8.68,
+        "der_collar025": 7.64,
+        "jer": 10.93,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00039",
+        "duration": 182.62,
+        "ref_spk": 3,
+        "hyp_spk": 3,
+        "der_collar0": 2.87,
+        "der_collar025": 1.65,
+        "jer": 3.04,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00044",
+        "duration": 181.9,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 5.5,
+        "der_collar025": 4.35,
+        "jer": 5.62,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00046",
+        "duration": 184.37,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 8.24,
+        "der_collar025": 7.48,
+        "jer": 13.43,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00047",
+        "duration": 181.02,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 1.53,
+        "der_collar025": 0.56,
+        "jer": 1.69,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00048",
+        "duration": 182.15,
+        "ref_spk": 4,
+        "hyp_spk": 4,
+        "der_collar0": 2.89,
+        "der_collar025": 1.88,
+        "jer": 3.7,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00049",
+        "duration": 181.49,
+        "ref_spk": 4,
+        "hyp_spk": 5,
+        "der_collar0": 10.4,
+        "der_collar025": 9.3,
+        "jer": 12.35,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00051",
+        "duration": 186.09,
+        "ref_spk": 6,
+        "hyp_spk": 6,
+        "der_collar0": 5.94,
+        "der_collar025": 4.7,
+        "jer": 9.92,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00054",
+        "duration": 182.47,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 1.69,
+        "der_collar025": 0.56,
+        "jer": 1.44,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00056",
+        "duration": 190.74,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 2.27,
+        "der_collar025": 1.09,
+        "jer": 2.65,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00059",
+        "duration": 181.51,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 11.26,
+        "der_collar025": 10.67,
+        "jer": 15.55,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00060",
+        "duration": 181.58,
+        "ref_spk": 6,
+        "hyp_spk": 6,
+        "der_collar0": 3.29,
+        "der_collar025": 2.28,
+        "jer": 6.46,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00062",
+        "duration": 181.83,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 4.4,
+        "der_collar025": 3.59,
+        "jer": 8.1,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00066",
+        "duration": 186.66,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 7.17,
+        "der_collar025": 6.24,
+        "jer": 12.6,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00069",
+        "duration": 182.34,
+        "ref_spk": 7,
+        "hyp_spk": 7,
+        "der_collar0": 9.2,
+        "der_collar025": 8.15,
+        "jer": 14.73,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00077",
+        "duration": 184.09,
+        "ref_spk": 6,
+        "hyp_spk": 6,
+        "der_collar0": 11.25,
+        "der_collar025": 10.2,
+        "jer": 11.9,
+        "slice": "3to7spk_sim"
+      },
+      {
+        "stem": "sim_jvs_00083",
+        "duration": 182.47,
+        "ref_spk": 5,
+        "hyp_spk": 5,
+        "der_collar0": 3.79,
+        "der_collar025": 2.77,
+        "jer": 5.27,
+        "slice": "3to7spk_sim"
+      }
+    ]
+  },
+  "production_criteria": {
+    "criterion_1": {
+      "name": "Cải thiện ít nhất 1.5% - 2.0% DER so với v0.2",
+      "delta_der": 4.43,
+      "passed": true
+    },
+    "criterion_2": {
+      "name": "Hiệu năng 3–7 người không bị suy giảm (chống bias 2 người)",
+      "baseline_3to7_der": 29.61,
+      "v2_0_3to7_der": 12.56,
+      "passed": true
+    },
+    "criterion_3": {
+      "name": "Đạt SLA độ trễ chunk p_99 <= 320ms",
+      "latency_ms": 320,
+      "passed": true
+    },
+    "all_criteria_passed": true
+  }
+}

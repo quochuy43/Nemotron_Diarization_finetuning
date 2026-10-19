@@ -111,11 +111,16 @@ diarization/
 * [x] **Giai đoạn 5**: Huấn luyện Grid Search theo các tỷ lệ (1:3, 1:5, 1:8) và script quét 50 Checkpoints trên Dev (`run_train_grid.py`) (**HOÀN TẤT 100%**).
 * [x] **Giai đoạn 6**: Checkpoint Averaging (SWA v2.0) và nghiệm thu chốt trên Test Set (`checkpoint_averaging_swa.py`) (**HOÀN TẤT 100%**).
 
-### Kết quả Thực nghiệm Mẫu trên GPU RTX 3050 Laptop:
-* **Tốc độ suy luận (RTF)**: **`0.0038`** (~260x real-time speed, xử lý 20 phút âm thanh trong 4.64 giây).
-* **Baseline Zero-shot (v0.1)**: `DER Collar 0s = 12.34%` | `DER Collar 0.25s = 7.10%` | `SCA = 100.0%`.
-* **Post-processing Tuning (v0.2)**: `DER Collar 0s = 12.05%` (giảm -0.29%) | `DER Collar 0.25s = 6.64%` (giảm -0.46%) | `JER = 11.72%`.
-* **Bộ siêu tham số tối ưu v0.2**: `threshold = 0.35`, `min_duration_on = 0.20s`, `min_duration_off = 0.05s`.
+### Kết quả Benchmark Chính thức trên Toàn bộ Tập Dev Set (43 files):
+* **Baseline Zero-shot (v0.1)**: `DER Collar 0s = 20.89%` (Miss: 3.18% | FA: 6.42% | Conf: 11.29%) | 2 người: `18.77%` | 3–7 người: `29.61%`.
+* **Post-processing Tuning (v0.2)**: `DER Collar 0s = 20.45%` (giảm -0.44%) | 2 người: `18.40%` | 3–7 người: `28.85%`.
+* **Bộ siêu tham số hậu xử lý tối ưu chuẩn (v0.2 & SWA)**:
+  * `threshold = 0.45` (Ngưỡng quyết định)
+  * `min_duration_on = 0.05s` (Thời lượng nói tối thiểu)
+  * `min_duration_off = 0.15s` (Khoảng lặng nối liền)
+
+> [!NOTE]
+> *Ghi chú tốc độ suy luận (RTF)*: Kiểm thử trên GPU cá nhân RTX 3050 Laptop đạt RTF = **`0.0038`** (~260x real-time speed, xử lý 20 phút âm thanh chỉ trong 4.64 giây).
 
 ---
 
