@@ -40,32 +40,42 @@ test2_files_dest = manifests_dir / "test2_files.txt"
 javis_dir = repo_root / "data" / "javis"
 
 
-def build_test1():
-    """Tạo test1_manifest.json từ test_manifest.json (43 files)."""
+def build_test1(prefix: str = "/content/diarization/"):
+    """Tạo test1_manifest.json từ test_manifest.json (43 files) với định dạng chuẩn /content/diarization/..."""
     if not test_manifest_src.exists():
         print(f"[!] Cảnh báo: Không tìm thấy {test_manifest_src}")
         return
 
-    # Copy sang test1_manifest.json
-    shutil.copyfile(test_manifest_src, test1_manifest_dest)
-    print(f"[+] Đã tạo: {test1_manifest_dest}")
-
-    # Tạo test1_files.txt
+    items = []
     lines = []
     with open(test_manifest_src, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
-                item = json.loads(line)
-                lines.append(f"{Path(item['audio_filepath']).name} ({item.get('duration', 0):.1f}s, {item.get('num_speakers', 2)} spks)")
+            if not line:
+                continue
+            item = json.loads(line)
+            # Chuẩn hóa audio_filepath và rttm_filepath
+            for k in ["audio_filepath", "rttm_filepath"]:
+                if item.get(k):
+                    norm = item[k].replace("\\", "/")
+                    if "data/" in norm:
+                        sub = norm[norm.find("data/"):]
+                        item[k] = f"{prefix.rstrip('/')}/{sub}"
+            items.append(item)
+            lines.append(f"{Path(item['audio_filepath']).name} ({item.get('duration', 0):.1f}s, {item.get('num_speakers', 2)} spks)")
+
+    with open(test1_manifest_dest, "w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    print(f"[+] Đã tạo chuẩn hóa: {test1_manifest_dest} ({len(items)} files)")
 
     with open(test1_files_dest, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[+] Đã tạo danh sách: {test1_files_dest} ({len(lines)} files)")
 
 
-def build_test2():
-    """Quét toàn bộ data/javis/ và tạo test2_manifest.json."""
+def build_test2(prefix: str = "/content/diarization/"):
+    """Quét toàn bộ data/javis/ và tạo test2_manifest.json với định dạng chuẩn /content/diarization/..."""
     if not javis_dir.exists():
         print(f"[!] Cảnh báo: Không tìm thấy thư mục {javis_dir}")
         return
@@ -108,18 +118,18 @@ def build_test2():
             
             num_spks = len(speakers) if speakers else 2
 
-            # Chuẩn hóa đường dẫn tương đối chuẩn cho manifest
-            rel_audio = f"data/javis/{sub.name}/audio/{wav_path.name}"
-            rel_rttm = f"data/javis/{sub.name}/rttm/{rttm_path.name}" if rttm_path and rttm_path.exists() else None
+            # Chuẩn hóa đường dẫn tuyệt đối chuẩn cho Colab
+            abs_audio = f"{prefix.rstrip('/')}/data/javis/{sub.name}/audio/{wav_path.name}"
+            abs_rttm = f"{prefix.rstrip('/')}/data/javis/{sub.name}/rttm/{rttm_path.name}" if rttm_path and rttm_path.exists() else None
 
             manifest_entry = {
-                "audio_filepath": rel_audio,
+                "audio_filepath": abs_audio,
                 "offset": 0.0,
                 "duration": duration,
                 "label": "infer",
                 "text": "-",
                 "num_speakers": num_spks,
-                "rttm_filepath": rel_rttm,
+                "rttm_filepath": abs_rttm,
                 "uem_filepath": None,
                 "subset": sub.name
             }
