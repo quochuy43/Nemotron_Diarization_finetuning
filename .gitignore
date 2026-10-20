@@ -18,7 +18,7 @@ experiments/baselines
 *.bin
 *.nemo
 *.npz
-final_model_production_profile.json
+final_model_production_profile*.json
 
 # 3. File rác Python, IDE và hệ điều hành
 __pycache__/
