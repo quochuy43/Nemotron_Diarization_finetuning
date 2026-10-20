@@ -47,6 +47,7 @@ def run_live_stream_inference(
     output_rttm: Optional[str] = None,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     simulate_realtime: bool = True,
+    mode: str = "streaming",
     threshold: float = 0.45,
     min_speech_on: float = 0.05,
     min_gap_off: float = 0.15
@@ -71,6 +72,7 @@ def run_live_stream_inference(
     print(f"[*] Đang sử dụng mô hình: {resolved_model}")
     print(f"[*] File âm thanh đầu vào: {audio_path}")
     print(f"[*] Thiết bị (Device):     {device}")
+    print(f"[*] Chế độ suy luận:       {mode.upper()}")
     print(f"[*] Siêu tham số:          Threshold={threshold}, MinOn={min_speech_on}s, MinOff={min_gap_off}s")
 
     pretrained_id = "nvidia/Nemotron-3-Diarization"
@@ -93,10 +95,14 @@ def run_live_stream_inference(
     resolved_audio = resolve_file_path(audio_path)
     engine = StreamingDiarizationEngine(model=model, processor=processor, device=device)
 
-    print("\n[*] Bắt đầu phát luồng âm thanh...")
+    print(f"\n[*] Bắt đầu xử lý âm thanh ({mode.upper()})...")
     print("-" * 80)
     t_start = time.time()
-    probs, latencies = engine.process_file_streaming(resolved_audio)
+    if mode == "offline":
+        probs, infer_ms = engine.process_file_offline(resolved_audio)
+        latencies = [infer_ms]
+    else:
+        probs, latencies = engine.process_file_streaming(resolved_audio)
     total_time = time.time() - t_start
 
     info = sf.info(resolved_audio)
@@ -124,7 +130,7 @@ def run_live_stream_inference(
     print(f"[*] Tổng thời lượng âm thanh: {dur:.2f}s")
     print(f"[*] Thời gian xử lý:         {total_time:.2f}s")
     print(f"[*] Real-Time Factor (RTF):   {rtf:.4f} ({1.0/max(1e-5, rtf):.1f}x tốc độ thực tế)")
-    if latencies:
+    if latencies and mode == "streaming":
         print(f"[*] Độ trễ mỗi chunk 320ms:   p50={np.percentile(latencies, 50):.1f}ms | p99={np.percentile(latencies, 99):.1f}ms")
 
     if output_rttm:
@@ -138,6 +144,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Chạy Streaming Diarization thời gian thực trên 1 file âm thanh")
     parser.add_argument("--audio", type=str, required=True, help="Đường dẫn file WAV âm thanh 16kHz")
     parser.add_argument("--model", type=str, default=None, help="Đường dẫn file checkpoint model SWA")
+    parser.add_argument("--mode", type=str, choices=["streaming", "offline"], default="streaming", help="Chế độ suy luận ('streaming' có FIFO context & khóa kênh hoặc 'offline')")
     parser.add_argument("--output_rttm", type=str, default=None, help="Đường dẫn lưu file RTTM đầu ra")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Thiết bị (cuda/cpu)")
     parser.add_argument("--threshold", type=float, default=0.45, help="Ngưỡng quyết định")
@@ -151,6 +158,7 @@ if __name__ == "__main__":
         model_path=args.model,
         output_rttm=args.output_rttm,
         device=args.device,
+        mode=args.mode,
         threshold=args.threshold,
         min_speech_on=args.min_on,
         min_gap_off=args.min_off
