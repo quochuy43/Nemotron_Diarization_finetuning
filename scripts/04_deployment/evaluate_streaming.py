@@ -479,11 +479,13 @@ def run_production_evaluation(
         "evaluation_mode": mode,
         "total_units_evaluated": len(lat_arr),
         "mean_latency_ms": round(mean_lat, 2),
+        "mean_chunk_latency_ms": round(mean_lat, 2),
         "p50_latency_ms": round(p50, 2),
         "p90_latency_ms": round(p90, 2),
         "p95_latency_ms": round(p95, 2),
         "p99_latency_ms": round(p99, 2),
         "max_latency_ms": round(max_lat, 2),
+        "max_chunk_latency_ms": round(max_lat, 2),
         "real_time_factor_rtf": round(rtf, 4),
         "real_time_speed_multiplier": round(1.0 / max(1e-5, rtf), 1),
         "sla_p99_threshold_ms": 320.0,
@@ -558,7 +560,7 @@ def run_production_evaluation(
     print(f"  • Môi trường thực thi:          PyTorch {hw['pytorch_version']} | CUDA {hw['cuda_version']}")
 
     print("\n4️⃣ ĐỘ TRỄ SUY LUẬN STREAMING (LATENCY & SPEED BENCHMARK):")
-    print(f"  • Độ trễ trung bình mỗi chunk:  {latency_metrics['mean_chunk_latency_ms']} ms")
+    print(f"  • Độ trễ trung bình mỗi chunk:  {latency_metrics.get('mean_chunk_latency_ms', latency_metrics.get('mean_latency_ms', 0.0))} ms")
     print(f"  • Độ trễ phân vị p50 (Median):  {latency_metrics['p50_latency_ms']} ms")
     print(f"  • Độ trễ phân vị p95:           {latency_metrics['p95_latency_ms']} ms")
     print(f"  • Độ trễ phân vị p99 (SLA <=320ms): {latency_metrics['p99_latency_ms']} ms  --->  {'✅ ĐẠT CHUẨN SLA' if latency_metrics['sla_passed'] else '❌ KHÔNG ĐẠT'}")
