@@ -1,0 +1,7 @@
+{
+  "extraPaths": [
+    "scripts/02_baseline_eval",
+    "scripts/03_training",
+    "scripts/04_deployment"
+  ]
+}

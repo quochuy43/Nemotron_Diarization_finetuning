@@ -33,6 +33,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+print("[*] Đang khởi động WebSocket Streaming Server (vui lòng chờ trong giây lát)...", flush=True)
+
 import torch
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -48,7 +50,27 @@ for p in [str(scripts_dir), str(scripts_dir / "02_baseline_eval"), str(scripts_d
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from evaluate_metrics import resolve_file_path
+
+def resolve_file_path(path_str: str) -> str:
+    """Tự động chuẩn hóa và tìm kiếm file trên Windows / Colab / Drive."""
+    if not path_str:
+        return path_str
+    if Path(path_str).exists():
+        return path_str
+    norm_path = path_str.replace("\\", "/")
+    if "data/" in norm_path:
+        sub_rel = norm_path[norm_path.find("data/"):]
+        candidates = [
+            Path.cwd() / sub_rel,
+            Path(__file__).resolve().parent.parent.parent / sub_rel,
+            Path("/content/diarization") / sub_rel,
+            Path("/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization") / sub_rel,
+            Path("/content/drive/MyDrive") / sub_rel,
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return str(cand)
+    return path_str
 
 
 # ===============================================================================
@@ -303,7 +325,7 @@ class ModelManager:
             "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
             "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt",
             "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
-            "d:/VJ_Technologies/diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt"
+            "D:/VJ_Technologies/diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt"
         ]
         resolved = None
         for cand in candidates:
@@ -369,10 +391,19 @@ class ModelManager:
 # 5. KHỞI TẠO ỨNG DỤNG FASTAPI & SESSION MANAGER
 # ===============================================================================
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    manager = ModelManager.get_instance()
+    manager.load_model()
+    yield
+
 app = FastAPI(
     title="Nemotron-3 Diarization Streaming Server",
     description="Kiến trúc 1: WebSocket + Ring Buffer cho Realtime Diarization (SLA 0.32s)",
-    version="1.3.0"
+    version="1.3.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -384,12 +415,6 @@ app.add_middleware(
 )
 
 active_sessions: Dict[str, DiarizationSession] = {}
-
-
-@app.on_event("startup")
-async def startup_event():
-    manager = ModelManager.get_instance()
-    manager.load_model()
 
 
 @app.get("/health")
