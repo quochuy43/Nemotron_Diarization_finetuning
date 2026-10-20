@@ -33,10 +33,10 @@ from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
 
 def resolve_file_path(path_str: str) -> str:
     """
-    Tự động chuẩn hóa và tìm kiếm file trên đa nền tảng (Windows / Linux Colab):
+    Tự động chuẩn hóa và tìm kiếm file trên đa nền tảng (Windows / Linux Colab / Google Drive):
     1. Kiểm tra trực tiếp đường dẫn gốc.
     2. Nếu không tìm thấy, trích xuất đường dẫn tương đối bắt đầu từ 'data/...'
-       và tìm kiếm tương đối so với thư mục làm việc hiện tại hoặc thư mục gốc repo.
+       và tìm kiếm tương đối so với thư mục làm việc hiện tại, repo root, hoặc Google Drive.
     """
     if not path_str:
         return path_str
@@ -51,17 +51,28 @@ def resolve_file_path(path_str: str) -> str:
     # Tìm kiếm đoạn path bắt đầu từ "data/"
     if "data/" in norm_path:
         sub_rel = norm_path[norm_path.find("data/"):]
-        cand_cwd = Path.cwd() / sub_rel
-        if cand_cwd.exists():
-            return str(cand_cwd)
-        # Thử tìm tương đối với repo root (2 cấp trên script)
-        script_repo_root = Path(__file__).resolve().parent.parent.parent
-        cand_repo = script_repo_root / sub_rel
-        if cand_repo.exists():
-            return str(cand_repo)
-        cand_colab = Path("/content/diarization") / sub_rel
-        if cand_colab.exists():
-            return str(cand_colab)
+        candidates = [
+            Path.cwd() / sub_rel,
+            Path(__file__).resolve().parent.parent.parent / sub_rel,
+            Path("/content/diarization") / sub_rel,
+            Path("/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization") / sub_rel,
+            Path("/content/drive/MyDrive/diarization") / sub_rel,
+            Path("/content/drive/MyDrive") / sub_rel,
+        ]
+        # Thử cả trường hợp file nằm trong javis/ trên Drive
+        if "data/javis/" in norm_path:
+            javis_sub = norm_path[norm_path.find("javis/"):]
+            candidates.extend([
+                Path.cwd() / "data" / javis_sub,
+                Path("/content/diarization/data") / javis_sub,
+                Path("/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/data") / javis_sub,
+                Path("/content/drive/MyDrive") / javis_sub,
+                Path("/content/drive/MyDrive/javis") / javis_sub.replace("javis/", "")
+            ])
+
+        for cand in candidates:
+            if cand.exists():
+                return str(cand)
     
     return path_str
 
