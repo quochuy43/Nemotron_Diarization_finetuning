@@ -439,6 +439,15 @@ def run_production_evaluation(
         buf_s = engine.buffer_samples
         hop_s = engine.chunk_samples
         with torch.inference_mode():
+            # Khởi động GPU (Warm-up 5 chunks để nạp CUDA kernel, loại bỏ cold start)
+            for _ in range(5):
+                warm_ch = s_data[:buf_s]
+                inp_w = processor(warm_ch, sampling_rate=16000, return_tensors="pt").to(device)
+                _ = model(**inp_w).logits
+            if device.startswith("cuda"):
+                torch.cuda.synchronize()
+
+            # Bắt đầu đo đạc chính thức sau khi GPU đã ổn định
             num_bench = min(60, max(1, (len(s_data) - buf_s) // hop_s))
             for i in range(num_bench):
                 ch = s_data[i * hop_s : i * hop_s + buf_s]
@@ -490,7 +499,7 @@ def run_production_evaluation(
         profile_info["hardware_info"]["peak_vram_mb"] = peak_mb
         profile_info["hardware_info"]["vram_allocated_mb"] = alloc_mb
 
-    # 6. Thống kê độ trễ Streaming Chunk
+    # 6. Thống kê độ trễ Streaming Chunk (Sau Warm-up)
     lat_arr = np.array(chunk_latencies if chunk_latencies else all_latencies_ms)
     p50 = float(np.percentile(lat_arr, 50))
     p90 = float(np.percentile(lat_arr, 90))
@@ -498,7 +507,10 @@ def run_production_evaluation(
     p99 = float(np.percentile(lat_arr, 99))
     mean_lat = float(np.mean(lat_arr))
     max_lat = float(np.max(lat_arr))
-    rtf = total_infer_sec / max(1e-5, total_audio_sec)
+    
+    # RTF cho streaming chunk = latency_ms / (240ms)
+    rtf_streaming = (mean_lat / 1000.0) / engine.chunk_duration
+    rtf_throughput = total_infer_sec / max(1e-5, total_audio_sec)
 
     latency_metrics = {
         "evaluation_mode": mode,
@@ -511,8 +523,9 @@ def run_production_evaluation(
         "p99_latency_ms": round(p99, 2),
         "max_latency_ms": round(max_lat, 2),
         "max_chunk_latency_ms": round(max_lat, 2),
-        "real_time_factor_rtf": round(rtf, 4),
-        "real_time_speed_multiplier": round(1.0 / max(1e-5, rtf), 1),
+        "real_time_factor_rtf": round(rtf_streaming, 4),
+        "real_time_speed_multiplier": round(1.0 / max(1e-5, rtf_streaming), 1),
+        "batch_throughput_multiplier": round(1.0 / max(1e-5, rtf_throughput), 1),
         "sla_p99_threshold_ms": 320.0,
         "sla_passed": p99 <= 320.0
     }
@@ -536,7 +549,7 @@ def run_production_evaluation(
             "overall_status": "APPROVED_FOR_PRODUCTION",
             "criterion_1_der_improvement": f"Passed (+{20.45 - accuracy_metrics['overall']['der_collar0']:.2f}% improvement vs v0.2)",
             "criterion_2_multi_speaker": f"Passed ({accuracy_metrics['slice_3to7spk_sim']['der_collar0']:.2f}% on 3-7 speakers)",
-            "criterion_3_latency_sla": f"Passed (p99={p99:.2f}ms <= 320ms)"
+            "criterion_3_latency_sla": f"Passed (p99={latency_metrics['p99_latency_ms']:.2f}ms <= 320ms)"
         }
     }
 
@@ -585,11 +598,13 @@ def run_production_evaluation(
     print(f"  • Môi trường thực thi:          PyTorch {hw['pytorch_version']} | CUDA {hw['cuda_version']}")
 
     print("\n4️⃣ ĐỘ TRỄ SUY LUẬN STREAMING (LATENCY & SPEED BENCHMARK):")
-    print(f"  • Độ trễ trung bình mỗi chunk:  {latency_metrics.get('mean_chunk_latency_ms', latency_metrics.get('mean_latency_ms', 0.0))} ms")
+    print(f"  • Độ trễ trung bình mỗi chunk:  {latency_metrics['mean_chunk_latency_ms']} ms")
     print(f"  • Độ trễ phân vị p50 (Median):  {latency_metrics['p50_latency_ms']} ms")
     print(f"  • Độ trễ phân vị p95:           {latency_metrics['p95_latency_ms']} ms")
     print(f"  • Độ trễ phân vị p99 (SLA <=320ms): {latency_metrics['p99_latency_ms']} ms  --->  {'✅ ĐẠT CHUẨN SLA' if latency_metrics['sla_passed'] else '❌ KHÔNG ĐẠT'}")
     print(f"  • Tốc độ Real-Time Factor (RTF):{latency_metrics['real_time_factor_rtf']} ({latency_metrics['real_time_speed_multiplier']}x tốc độ âm thanh thực)")
+    if "batch_throughput_multiplier" in latency_metrics and mode == "offline":
+        print(f"  • Tốc độ thông lượng Offline:   {latency_metrics['batch_throughput_multiplier']}x tốc độ âm thanh thực")
 
     print("\n5️⃣ ĐỘ CHÍNH XÁC TRÊN TẬP TEST ĐÓNG BĂNG 100% (ACCURACY METRICS):")
     print(f"  • DER Tổng Thể (Collar 0.0s):   {ov['der_collar0']:.2f}%  [Miss: {ov['miss_rate_c0']:.2f}% | FA: {ov['false_alarm_c0']:.2f}% | Conf: {ov['confusion_c0']:.2f}%]")
