@@ -417,6 +417,73 @@ app.add_middleware(
 active_sessions: Dict[str, DiarizationSession] = {}
 
 
+from pyannote.core import Annotation, Segment
+from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
+
+
+def parse_rttm_text(rttm_text: str, uri: str = "eval_session") -> Annotation:
+    """Đọc chuỗi RTTM chuẩn NIST thành pyannote.core.Annotation."""
+    annotation = Annotation(uri=uri)
+    for line in rttm_text.strip().splitlines():
+        line = line.strip()
+        if not line or not line.startswith("SPEAKER"):
+            continue
+        parts = line.split()
+        if len(parts) >= 8:
+            try:
+                start = float(parts[3])
+                duration = float(parts[4])
+                spk = parts[7]
+                if duration > 0.001:
+                    annotation[Segment(start, start + duration)] = spk
+            except Exception:
+                continue
+    return annotation
+
+
+def compute_pair_metrics(ref_rttm_str: str, hyp_rttm_str: str) -> Dict[str, Any]:
+    """Tính toán chi tiết các chỉ số NIST DER (c0 & c0.25), Miss, FA, Conf, JER và SCA."""
+    uri = "eval_session"
+    ref = parse_rttm_text(ref_rttm_str, uri=uri)
+    hyp = parse_rttm_text(hyp_rttm_str, uri=uri)
+
+    if len(ref) == 0:
+        raise ValueError("Ground Truth RTTM không chứa đoạn phát biểu hợp lệ!")
+    if len(hyp) == 0:
+        raise ValueError("Kết quả RTTM dự đoán rỗng (không phát hiện người nói)!")
+
+    der_c0_metric = DiarizationErrorRate(collar=0.0, skip_overlap=False)
+    der_c025_metric = DiarizationErrorRate(collar=0.25, skip_overlap=False)
+    jer_metric = JaccardErrorRate(collar=0.0, skip_overlap=False)
+
+    der_c0 = der_c0_metric(ref, hyp) * 100.0
+    der_c025 = der_c025_metric(ref, hyp) * 100.0
+    jer = jer_metric(ref, hyp) * 100.0
+
+    acc_c0 = der_c0_metric.accumulated_
+    tot_c0 = acc_c0.get("total", 0.0)
+    miss_c0 = (acc_c0.get("missed detection", 0.0) / max(1e-6, tot_c0)) * 100.0
+    fa_c0 = (acc_c0.get("false alarm", 0.0) / max(1e-6, tot_c0)) * 100.0
+    conf_c0 = (acc_c0.get("confusion", 0.0) / max(1e-6, tot_c0)) * 100.0
+
+    ref_speakers = len(ref.labels())
+    hyp_speakers = len(hyp.labels())
+
+    return {
+        "der_collar0": round(der_c0, 2),
+        "der_collar025": round(der_c025, 2),
+        "miss_rate_c0": round(miss_c0, 2),
+        "false_alarm_c0": round(fa_c0, 2),
+        "confusion_c0": round(conf_c0, 2),
+        "jer": round(jer, 2),
+        "ref_speakers": ref_speakers,
+        "hyp_speakers": hyp_speakers,
+        "speaker_count_match": ref_speakers == hyp_speakers,
+        "speaker_count_diff": abs(ref_speakers - hyp_speakers),
+        "ref_speech_duration_sec": round(tot_c0, 2)
+    }
+
+
 @app.get("/health")
 def health_check():
     manager = ModelManager.get_instance()
@@ -427,6 +494,25 @@ def health_check():
         "active_sessions": len(active_sessions),
         "sla_target_ms": 320.0
     }
+
+
+@app.post("/api/evaluate_rttm")
+async def evaluate_rttm_api(request: Request):
+    """API đối chiếu kết quả dự đoán với Ground Truth RTTM và trả về bộ metrics chuẩn NIST."""
+    try:
+        body = await request.json()
+        ref_text = body.get("reference_rttm", "")
+        hyp_text = body.get("hypothesis_rttm", "")
+
+        if not ref_text.strip():
+            return JSONResponse({"status": "error", "message": "Chưa cung cấp Ground Truth RTTM!"}, status_code=400)
+        if not hyp_text.strip():
+            return JSONResponse({"status": "error", "message": "Chưa có dữ liệu RTTM dự đoán!"}, status_code=400)
+
+        metrics = compute_pair_metrics(ref_text, hyp_text)
+        return JSONResponse({"status": "success", "metrics": metrics})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 # ===============================================================================
@@ -537,27 +623,28 @@ async def websocket_diarize(
 
 @app.get("/", response_class=HTMLResponse)
 def get_demo_ui():
-    """Giao diện web trực quan, hiện đại cho phép test Microphone hoặc Stream file trực tiếp."""
+    """Giao diện web trực quan, hiện đại: Hỗ trợ Live Mic / File Stream, Xuất RTTM tức thì & Đo Metrics với Ground Truth."""
     html_content = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nemotron-3 Real-Time Diarization (0.32s SLA)</title>
+  <title>Nemotron-3 Real-Time Diarization & Benchmark Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-dark: #0a0e17;
-      --card-bg: rgba(18, 24, 38, 0.75);
-      --border-color: rgba(255, 255, 255, 0.08);
+      --card-bg: rgba(18, 24, 38, 0.78);
+      --card-border: rgba(255, 255, 255, 0.08);
       --accent-blue: #3b82f6;
       --accent-cyan: #06b6d4;
       --accent-green: #10b981;
       --accent-purple: #8b5cf6;
       --accent-orange: #f59e0b;
+      --accent-red: #ef4444;
       --text-main: #f3f4f6;
       --text-muted: #9ca3af;
     }
@@ -565,16 +652,16 @@ def get_demo_ui():
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Outfit', sans-serif;
-      background: radial-gradient(circle at 50% 0%, #151e33 0%, var(--bg-dark) 75%);
+      background: radial-gradient(circle at 50% 0%, #151e33 0%, var(--bg-dark) 80%);
       color: var(--text-main);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      padding: 24px;
+      padding: 20px;
     }
 
     .container {
-      max-width: 1100px;
+      max-width: 1240px;
       margin: 0 auto;
       width: 100%;
       display: flex;
@@ -587,12 +674,12 @@ def get_demo_ui():
       justify-content: space-between;
       align-items: center;
       padding-bottom: 16px;
-      border-bottom: 1px solid var(--border-color);
+      border-bottom: 1px solid var(--card-border);
     }
     .brand h1 {
-      font-size: 24px;
-      font-weight: 700;
-      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      font-size: 22px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #60a5fa, #c084fc);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
@@ -602,7 +689,7 @@ def get_demo_ui():
       display: flex;
       align-items: center;
       gap: 8px;
-      background: rgba(16, 185, 129, 0.15);
+      background: rgba(16, 185, 129, 0.12);
       border: 1px solid rgba(16, 185, 129, 0.3);
       color: var(--accent-green);
       padding: 6px 14px;
@@ -618,133 +705,230 @@ def get_demo_ui():
       box-shadow: 0 0 8px currentColor;
     }
 
-    /* Grid Layout */
-    .dashboard-grid {
+    /* Grid layout */
+    .grid-main {
       display: grid;
-      grid-template-columns: 1fr 340px;
+      grid-template-columns: 1fr 380px;
       gap: 20px;
     }
 
     .card {
       background: var(--card-bg);
       backdrop-filter: blur(16px);
-      border: 1px solid var(--border-color);
+      border: 1px solid var(--card-border);
       border-radius: 16px;
       padding: 20px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
     }
 
-    .card-title {
-      font-size: 14px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
-      margin-bottom: 16px;
+    .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    /* Tabs */
+    .tab-group {
+      display: flex;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 4px;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: var(--accent-blue);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
     }
 
     /* Controls */
-    .controls { display: flex; gap: 12px; }
-    button {
-      flex: 1;
-      padding: 12px 20px;
+    .controls-row {
+      display: flex;
+      gap: 12px;
+    }
+    button.btn {
+      padding: 12px 18px;
       border-radius: 10px;
       border: none;
       font-family: 'Outfit', sans-serif;
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      display: flex;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
       transition: all 0.2s ease;
     }
+    button.btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-primary {
       background: linear-gradient(135deg, var(--accent-blue), #2563eb);
       color: #fff;
-      box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
     }
-    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-primary:hover:not(:disabled) { transform: translateY(-1px); }
     .btn-danger {
-      background: rgba(239, 68, 68, 0.2);
+      background: rgba(239, 68, 68, 0.18);
       border: 1px solid rgba(239, 68, 68, 0.4);
       color: #f87171;
     }
-    .btn-danger:hover { background: rgba(239, 68, 68, 0.3); }
-
-    /* Visualizer */
-    .visualizer-container {
-      height: 80px;
-      background: rgba(0, 0, 0, 0.3);
-      border-radius: 10px;
-      overflow: hidden;
-      margin-top: 16px;
-      position: relative;
+    .btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.28); }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
     }
-    canvas { width: 100%; height: 100%; display: block; }
+    .btn-secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
 
-    /* Live Speakers List */
-    .speaker-slots {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 10px;
-      margin-top: 10px;
+    /* Ground Truth Upload Box */
+    .gt-box {
+      border: 1px dashed rgba(255, 255, 255, 0.18);
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(0, 0, 0, 0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    .speaker-card {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 12px;
+    .file-input-wrapper {
       display: flex;
       align-items: center;
-      gap: 12px;
-      transition: all 0.25s ease;
+      gap: 10px;
     }
-    .speaker-card.active {
+    input[type="file"] { display: none; }
+    .custom-file-btn {
+      padding: 7px 14px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .custom-file-btn:hover { background: rgba(255, 255, 255, 0.16); }
+
+    /* Active Speakers */
+    .speaker-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .spk-badge {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: all 0.2s ease;
+    }
+    .spk-badge.active {
       border-color: var(--accent-cyan);
-      background: rgba(6, 182, 212, 0.12);
-      box-shadow: 0 0 16px rgba(6, 182, 212, 0.3);
-      transform: scale(1.02);
+      background: rgba(6, 182, 212, 0.14);
+      box-shadow: 0 0 14px rgba(6, 182, 212, 0.35);
+      transform: translateY(-2px);
     }
     .spk-avatar {
       width: 32px; height: 32px;
       border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
       display: flex;
       align-items: center;
       justify-content: center;
       font-weight: 700;
       font-size: 13px;
-      background: rgba(255, 255, 255, 0.1);
     }
-    .speaker-card.active .spk-avatar {
+    .spk-badge.active .spk-avatar {
       background: var(--accent-cyan);
       color: #000;
     }
-    .spk-info { flex: 1; }
-    .spk-name { font-size: 13px; font-weight: 600; }
-    .spk-prob { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+    .spk-title { font-size: 13px; font-weight: 600; }
+    .spk-status { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 
-    /* Metrics side */
-    .metric-row {
-      display: flex;
-      justify-content: space-between;
-      padding: 10px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      font-size: 13px;
+    /* Waveform Canvas */
+    .visualizer-box {
+      height: 60px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: 10px;
+      overflow: hidden;
     }
-    .metric-val {
+    canvas { width: 100%; height: 100%; display: block; }
+
+    /* Results section after stop */
+    .results-card {
+      border-color: rgba(96, 165, 250, 0.3);
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(18, 24, 38, 0.85) 100%);
+    }
+
+    /* Scorecard metrics */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .metric-item {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .metric-item.winner {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .metric-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
+    .metric-value {
+      font-size: 20px;
+      font-weight: 700;
       font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
       color: var(--accent-cyan);
     }
+    .metric-sub { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 
-    /* Logs view */
+    /* RTTM Code Box */
+    .rttm-box {
+      background: #06090f;
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #93c5fd;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre;
+    }
+
+    /* Timeline Log */
     .timeline-log {
-      height: 280px;
+      height: 260px;
       background: rgba(0, 0, 0, 0.4);
       border-radius: 10px;
       padding: 12px;
@@ -763,10 +947,10 @@ def get_demo_ui():
       display: flex;
       justify-content: space-between;
     }
-    .log-item.speaker_0 { border-color: #3b82f6; }
-    .log-item.speaker_1 { border-color: #10b981; }
-    .log-item.speaker_2 { border-color: #f59e0b; }
-    .log-item.speaker_3 { border-color: #ec4899; }
+    .log-item.spk_0 { border-color: #3b82f6; }
+    .log-item.spk_1 { border-color: #10b981; }
+    .log-item.spk_2 { border-color: #f59e0b; }
+    .log-item.spk_3 { border-color: #ec4899; }
   </style>
 </head>
 <body>
@@ -774,75 +958,156 @@ def get_demo_ui():
     <header>
       <div class="brand">
         <h1>NVIDIA Nemotron-3 Diarization</h1>
-        <p>Kiến Trúc 1: WebSocket + Ring Buffer (0.32s SLA - Low Latency Serving)</p>
+        <p>Production Streaming Hub (0.32s SLA) & NIST RTTM Evaluation Playground</p>
       </div>
       <div class="status-badge" id="wsStatus">
         <span class="status-dot"></span> SẴN SÀNG KẾT NỐI
       </div>
     </header>
 
-    <div class="dashboard-grid">
-      <!-- Cột Trái: Điều khiển & Người nói -->
+    <div class="grid-main">
+      <!-- Cột Trái: Điều Khiển + Ground Truth + Kết Quả RTTM -->
       <div style="display: flex; flex-direction: column; gap: 20px;">
+        
+        <!-- CARD 1: ĐIỀU KHIỂN STREAMING -->
         <div class="card">
-          <div class="card-title">🎙️ ĐIỀU KHIỂN THU ÂM TRỰC TIẾP</div>
-          <div class="controls">
-            <button class="btn-primary" id="btnStart" onclick="startRecording()">
-              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 02-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
-              Bắt Đầu Thu Âm
-            </button>
-            <button class="btn-danger" id="btnStop" onclick="stopRecording()" disabled>
-              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg>
-              Dừng Thu Âm
-            </button>
+          <div class="card-header">
+            <span>🎙️ NGUỒN ÂM THANH STREAMING</span>
+            <span style="font-size: 11px; color: var(--accent-cyan);" id="streamTimeLabel">0.00s</span>
           </div>
 
-          <div class="visualizer-container">
+          <div class="tab-group">
+            <button class="tab-btn active" id="tabMic" onclick="switchInputMode('mic')">Microphone Trực Tiếp</button>
+            <button class="tab-btn" id="tabFile" onclick="switchInputMode('file')">Stream File WAV / MP3</button>
+          </div>
+
+          <div id="fileUploadRow" style="display: none;">
+            <div class="file-input-wrapper">
+              <label class="custom-file-btn" for="audioFileInput">📁 Chọn File Âm Thanh...</label>
+              <input type="file" id="audioFileInput" accept="audio/*" onchange="handleAudioFileSelect(event)">
+              <span id="audioFileName" style="font-size: 12px; color: var(--text-muted);">Chưa chọn file âm thanh</span>
+            </div>
+          </div>
+
+          <div class="controls-row">
+            <button class="btn btn-primary" id="btnStart" onclick="startStreaming()">
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              Bắt Đầu Thu / Stream
+            </button>
+            <button class="btn btn-danger" id="btnStop" onclick="stopStreaming()" disabled>
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg>
+              Dừng Thu Âm & Xuất RTTM
+            </button>
+            <button class="btn btn-secondary" onclick="resetAll()">Làm Mới</button>
+          </div>
+
+          <div class="visualizer-box">
             <canvas id="waveformCanvas"></canvas>
           </div>
         </div>
 
+        <!-- CARD 2: GROUND TRUTH RTTM (TẢI LÊN ĐỂ ĐỐI CHIẾU) -->
         <div class="card">
-          <div class="card-title">
-            <span>🔊 TRẠNG THÁI NGƯỜI NÓI (ACTIVE SPEAKERS)</span>
-            <span style="font-size: 11px; color: var(--accent-cyan);" id="activeCount">0 người đang nói</span>
+          <div class="card-header">
+            <span>📁 GROUND TRUTH (NHÃN RTTM GỐC ĐỂ CHẤM ĐIỂM METRICS)</span>
+            <span id="gtBadge" style="font-size: 11px; color: var(--accent-orange);">Chưa có nhãn gốc</span>
           </div>
-          <div class="speaker-slots" id="speakerSlots">
-            <!-- Sinh tự động bằng JS -->
+
+          <div class="gt-box">
+            <div class="file-input-wrapper">
+              <label class="custom-file-btn" for="rttmFileInput">Tải Lên File .rttm</label>
+              <input type="file" id="rttmFileInput" accept=".rttm,.txt" onchange="handleRttmFileSelect(event)">
+              <span id="rttmFileName" style="font-size: 12px; color: var(--text-muted);">Hoặc dán nội dung RTTM trực tiếp vào ô bên dưới</span>
+            </div>
+            <textarea id="gtRttmText" rows="3" placeholder="SPEAKER audio_name 1 0.00 4.52 <NA> <NA> SPEAKER_01 <NA> <NA>&#10;SPEAKER audio_name 1 5.10 3.20 <NA> <NA> SPEAKER_02 <NA> <NA>" style="background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 8px; resize: vertical;" oninput="updateGtStats()"></textarea>
           </div>
         </div>
+
+        <!-- CARD 3: BẢNG KẾT QUẢ ĐO ĐẠC METRICS & HYPOTHESIS RTTM (HIỆN KHI DỪNG THU ÂM) -->
+        <div class="card results-card" id="resultsSection" style="display: none;">
+          <div class="card-header">
+            <span>🏆 KẾT QUẢ NGHIỆM THU RTTM & ĐỐI CHIẾU METRICS</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="custom-file-btn" onclick="copyRttmToClipboard()">📋 Sao Chép RTTM</button>
+              <button class="custom-file-btn" onclick="downloadRttmFile()">💾 Tải Về .rttm</button>
+            </div>
+          </div>
+
+          <!-- Scorecard khi có Ground Truth -->
+          <div id="metricsScorecard" style="display: none; flex-direction: column; gap: 10px;">
+            <div style="font-size: 13px; font-weight: 600; color: #a78bfa;">📊 BẢNG ĐIỂM CHUẨN NIST (SO SÁNH VỚI GROUND TRUTH):</div>
+            <div class="metric-grid">
+              <div class="metric-item winner">
+                <span class="metric-label">DER Collar 0.0s (Nghiêm ngặt)</span>
+                <span class="metric-value" id="valDerC0">--%</span>
+                <span class="metric-sub" id="valDerC0Sub">Miss: --% | FA: --% | Conf: --%</span>
+              </div>
+              <div class="metric-item winner">
+                <span class="metric-label">DER Collar 0.25s (Chuẩn NIST)</span>
+                <span class="metric-value" id="valDerC025" style="color: #10b981;">--%</span>
+                <span class="metric-sub">Khoảng dung sai tiêu chuẩn</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Jaccard Error Rate (JER)</span>
+                <span class="metric-value" id="valJer">--%</span>
+                <span class="metric-sub">Độ phủ phân đoạn người nói</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Độ Chính Xác Đếm Người (SCA)</span>
+                <span class="metric-value" id="valSca">--</span>
+                <span class="metric-sub" id="valScaSub">Ref: - | Hyp: -</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="noGtNotice" style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 10px 14px; border-radius: 8px; font-size: 12px; color: var(--text-muted);">
+            <span>Chưa có Ground Truth RTTM để đối chiếu metrics. Hãy tải file RTTM lên và bấm nút tính điểm:</span>
+            <button class="custom-file-btn" onclick="calculateMetricsNow()">🎯 Tính Toán Metrics Ngay</button>
+          </div>
+
+          <!-- RTTM Output Preview -->
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--text-muted);">📜 FILE RTTM XUẤT XƯỞNG CHUẨN NIST (HYPOTHESIS OUTPUT):</span>
+            <div class="rttm-box" id="rttmOutputBox">Chưa có kết quả RTTM.</div>
+          </div>
+        </div>
+
       </div>
 
-      <!-- Cột Phải: Thông số & Log -->
+      <!-- Cột Phải: Trạng Thái Người Nói & Timeline Event -->
       <div style="display: flex; flex-direction: column; gap: 20px;">
+        
+        <!-- CARD 4: TRẠNG THÁI NGƯỜI NÓI HIỆN TẠI -->
         <div class="card">
-          <div class="card-title">⚡ HIỆU NĂNG THỜI GIAN THỰC</div>
-          <div class="metric-row">
-            <span>Độ trễ tính toán chunk:</span>
-            <span class="metric-val" id="valLatency">-- ms</span>
+          <div class="card-header">
+            <span>🔊 TRẠNG THÁI NGƯỜI NÓI (LIVE)</span>
+            <span style="font-size: 11px; color: var(--accent-cyan);" id="activeSpeakerCountLabel">0 người</span>
           </div>
-          <div class="metric-row">
-            <span>Tiêu chuẩn SLA:</span>
-            <span class="metric-val" style="color: #10b981;">&le; 320 ms</span>
+
+          <div class="speaker-grid" id="speakerSlots">
+            <!-- 4 Speaker Badges -->
           </div>
-          <div class="metric-row">
-            <span>Tổng chunks đã xử lý:</span>
-            <span class="metric-val" id="valChunks">0</span>
-          </div>
-          <div class="metric-row">
-            <span>Thời lượng âm thanh:</span>
-            <span class="metric-val" id="valAudioTime">0.00 s</span>
+
+          <div style="display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--card-border); font-size: 12px;">
+            <span>Độ trễ chunk hiện tại:</span>
+            <span style="font-family:'JetBrains Mono'; font-weight:700; color:var(--accent-cyan);" id="valLatency">-- ms</span>
           </div>
         </div>
 
+        <!-- CARD 5: TIMELINE LOGS -->
         <div class="card" style="flex: 1;">
-          <div class="card-title">📋 NHẬT KÝ SỰ KIỆN (REAL-TIME TIMELINE)</div>
+          <div class="card-header">
+            <span>📋 NHẬT KÝ SỰ KIỆN (REAL-TIME TIMELINE)</span>
+            <span style="font-size: 11px; color: var(--text-muted);" id="chunkCountLabel">0 chunks</span>
+          </div>
+
           <div class="timeline-log" id="timelineLog">
-            <div style="color: var(--text-muted); text-align: center; margin-top: 30px;">
-              Bấm 'Bắt Đầu Thu Âm' để nhận diện người nói trực tiếp...
+            <div style="color: var(--text-muted); text-align: center; margin-top: 40px;">
+              Bấm 'Bắt Đầu Thu' để xem sự kiện phân đoạn...
             </div>
           </div>
         </div>
+
       </div>
     </div>
   </div>
@@ -852,26 +1117,79 @@ def get_demo_ui():
     let audioContext = null;
     let micStream = null;
     let processorNode = null;
-    let isRecording = false;
+    let isStreaming = false;
+    let inputMode = 'mic'; // 'mic' | 'file'
+    let selectedAudioFile = null;
 
-    // Khởi tạo các slot người nói từ 0 đến 3
+    // Bộ nhớ lưu trữ tất cả các chunks đã nhận được trong phiên
+    let recordedChunks = [];
+    let currentHypothesisRttm = "";
+
+    // 1. Khởi tạo 4 Speaker slots
     const speakerSlotsEl = document.getElementById("speakerSlots");
     for (let i = 0; i < 4; i++) {
-      const card = document.createElement("div");
-      card.className = "speaker-card";
-      card.id = `spkCard_${i}`;
-      card.innerHTML = `
+      const badge = document.createElement("div");
+      badge.className = "spk-badge";
+      badge.id = `spkBadge_${i}`;
+      badge.innerHTML = `
         <div class="spk-avatar">S${i}</div>
-        <div class="spk-info">
-          <div class="spk-name">SPEAKER_${String(i).padStart(2, '0')}</div>
-          <div class="spk-prob" id="spkProb_${i}">Im lặng</div>
+        <div>
+          <div class="spk-title">SPK_${String(i).padStart(2, '0')}</div>
+          <div class="spk-status" id="spkStatus_${i}">Im lặng</div>
         </div>
       `;
-      speakerSlotsEl.appendChild(card);
+      speakerSlotsEl.appendChild(badge);
     }
 
-    // Kết nối WebSocket
-    function connectWebSocket() {
+    // 2. Chuyển đổi chế độ Mic / File
+    function switchInputMode(mode) {
+      if (isStreaming) return;
+      inputMode = mode;
+      document.getElementById("tabMic").classList.toggle("active", mode === 'mic');
+      document.getElementById("tabFile").classList.toggle("active", mode === 'file');
+      document.getElementById("fileUploadRow").style.display = (mode === 'file') ? "block" : "none";
+    }
+
+    function handleAudioFileSelect(e) {
+      const file = e.target.files[0];
+      if (file) {
+        selectedAudioFile = file;
+        document.getElementById("audioFileName").innerText = `${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`;
+      }
+    }
+
+    function handleRttmFileSelect(e) {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          document.getElementById("gtRttmText").value = event.target.result;
+          document.getElementById("rttmFileName").innerText = file.name;
+          updateGtStats();
+        };
+        reader.readAsText(file);
+      }
+    }
+
+    function updateGtStats() {
+      const txt = document.getElementById("gtRttmText").value.trim();
+      if (!txt) {
+        document.getElementById("gtBadge").innerText = "Chưa có nhãn gốc";
+        document.getElementById("gtBadge").style.color = "var(--accent-orange)";
+        return;
+      }
+      const lines = txt.split('\\n').filter(l => l.trim().startsWith("SPEAKER"));
+      const spks = new Set();
+      lines.forEach(l => {
+        const p = l.trim().split(/\\s+/);
+        if (p.length >= 8) spks.add(p[7]);
+      });
+      document.getElementById("gtBadge").innerText = `Đã nạp: ${spks.size} người nói (${lines.length} đoạn)`;
+      document.getElementById("gtBadge").style.color = "var(--accent-green)";
+    }
+
+    // 3. Kết nối WebSocket
+    function connectWebSocket(onReady) {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws/diarize`;
       socket = new WebSocket(wsUrl);
@@ -879,6 +1197,7 @@ def get_demo_ui():
       socket.onopen = () => {
         document.getElementById("wsStatus").innerHTML = '<span class="status-dot"></span> ĐÃ KẾT NỐI WEBSOCKET';
         document.getElementById("wsStatus").style.color = 'var(--accent-green)';
+        if (onReady) onReady();
       };
 
       socket.onmessage = (event) => {
@@ -891,39 +1210,42 @@ def get_demo_ui():
       socket.onclose = () => {
         document.getElementById("wsStatus").innerHTML = '<span class="status-dot" style="background:#ef4444;"></span> MẤT KẾT NỐI';
         document.getElementById("wsStatus").style.color = '#ef4444';
-        if (isRecording) stopRecording();
+        if (isStreaming) stopStreaming();
       };
     }
 
+    // 4. Xử lý sự kiện nhận từ server
     function handleDiarizationEvent(event) {
-      document.getElementById("valLatency").innerText = `${event.latency_ms} ms`;
-      document.getElementById("valChunks").innerText = event.chunk_index;
-      document.getElementById("valAudioTime").innerText = `${event.time_end_sec} s`;
-      document.getElementById("activeCount").innerText = `${event.num_active_speakers} người đang nói`;
+      recordedChunks.push(event);
 
-      // Cập nhật card trạng thái
-      const activeIds = new Set(event.active_speakers.map(s => s.channel_index));
+      document.getElementById("valLatency").innerText = `${event.latency_ms} ms`;
+      document.getElementById("streamTimeLabel").innerText = `${event.time_end_sec.toFixed(2)}s`;
+      document.getElementById("chunkCountLabel").innerText = `${event.chunk_index} chunks`;
+      document.getElementById("activeSpeakerCountLabel").innerText = `${event.num_active_speakers} người`;
+
+      // Cập nhật card trạng thái loa
+      const activeChans = new Set(event.active_speakers.map(s => s.channel_index));
       for (let i = 0; i < 4; i++) {
-        const card = document.getElementById(`spkCard_${i}`);
-        const probEl = document.getElementById(`spkProb_${i}`);
-        if (activeIds.has(i)) {
-          card.classList.add("active");
-          const spkData = event.active_speakers.find(s => s.channel_index === i);
-          probEl.innerText = `Nói (Conf: ${(spkData.confidence * 100).toFixed(1)}%)`;
+        const badge = document.getElementById(`spkBadge_${i}`);
+        const statusEl = document.getElementById(`spkStatus_${i}`);
+        if (activeChans.has(i)) {
+          badge.classList.add("active");
+          const spkInfo = event.active_speakers.find(s => s.channel_index === i);
+          statusEl.innerText = `Nói (${(spkInfo.confidence * 100).toFixed(0)}%)`;
         } else {
-          card.classList.remove("active");
-          probEl.innerText = "Im lặng";
+          badge.classList.remove("active");
+          statusEl.innerText = "Im lặng";
         }
       }
 
-      // Thêm dòng log nếu có người nói
+      // Thêm log timeline
       if (event.active_speakers.length > 0) {
         const logContainer = document.getElementById("timelineLog");
         const spkNames = event.active_speakers.map(s => s.speaker_id).join(", ");
         const firstChan = event.active_speakers[0].channel_index;
 
         const row = document.createElement("div");
-        row.className = `log-item speaker_${firstChan % 4}`;
+        row.className = `log-item spk_${firstChan % 4}`;
         row.innerHTML = `
           <span>[${event.time_start_sec.toFixed(2)}s - ${event.time_end_sec.toFixed(2)}s] <strong>${spkNames}</strong></span>
           <span style="color:var(--text-muted);">${event.latency_ms}ms</span>
@@ -933,56 +1255,259 @@ def get_demo_ui():
       }
     }
 
-    // Bắt đầu thu âm trực tiếp từ Microphone
-    async function startRecording() {
+    // 5. Bắt đầu Stream
+    function startStreaming() {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        connectWebSocket();
-        await new Promise(r => setTimeout(r, 500));
+        connectWebSocket(() => startStreamingAction());
+      } else {
+        startStreamingAction();
       }
+    }
 
+    async function startStreamingAction() {
+      recordedChunks = [];
+      document.getElementById("timelineLog").innerHTML = "";
+      document.getElementById("resultsSection").style.display = "none";
+      document.getElementById("metricsScorecard").style.display = "none";
+
+      if (inputMode === 'mic') {
+        startMicCapture();
+      } else {
+        if (!selectedAudioFile) {
+          alert("Vui lòng chọn 1 file âm thanh WAV hoặc MP3 trước khi bắt đầu!");
+          return;
+        }
+        startFileStreaming(selectedAudioFile);
+      }
+    }
+
+    async function startMicCapture() {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         const source = audioContext.createMediaStreamSource(micStream);
 
-        // Buffer size 4096 samples (~256ms)
         processorNode = audioContext.createScriptProcessor(4096, 1, 1);
         source.connect(processorNode);
         processorNode.connect(audioContext.destination);
 
         processorNode.onaudioprocess = (e) => {
-          if (!isRecording || socket.readyState !== WebSocket.OPEN) return;
-          const inputData = e.inputBuffer.getChannelData(0);
-
-          // Chuyển Float32 sang 16-bit PCM bytes
-          const pcm16 = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
+          if (!isStreaming || socket.readyState !== WebSocket.OPEN) return;
+          const input = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            const s = Math.max(-1, Math.min(1, input[i]));
             pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
           socket.send(pcm16.buffer);
         };
 
-        isRecording = true;
+        isStreaming = true;
         document.getElementById("btnStart").disabled = true;
         document.getElementById("btnStop").disabled = false;
-        document.getElementById("timelineLog").innerHTML = "";
       } catch (err) {
-        alert("Không thể truy cập Microphone: " + err);
+        alert("Lỗi truy cập Microphone: " + err);
       }
     }
 
-    function stopRecording() {
-      isRecording = false;
+    async function startFileStreaming(file) {
+      isStreaming = true;
+      document.getElementById("btnStart").disabled = true;
+      document.getElementById("btnStop").disabled = false;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const tempAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const decodedBuffer = await tempAudioCtx.decodeAudioData(arrayBuffer);
+
+      // Resample sang 16kHz
+      const offlineCtx = new OfflineAudioContext(1, Math.ceil(decodedBuffer.duration * 16000), 16000);
+      const offlineSource = offlineCtx.createBufferSource();
+      offlineSource.buffer = decodedBuffer;
+      offlineSource.connect(offlineCtx.destination);
+      offlineSource.start();
+      const resampledBuffer = await offlineCtx.startRendering();
+
+      const floatData = resampledBuffer.getChannelData(0);
+      const chunkSamples = 3840; // 240ms @ 16kHz
+
+      let offset = 0;
+      const streamLoop = setInterval(() => {
+        if (!isStreaming || offset >= floatData.length || socket.readyState !== WebSocket.OPEN) {
+          clearInterval(streamLoop);
+          if (isStreaming) stopStreaming();
+          return;
+        }
+
+        const slice = floatData.subarray(offset, offset + chunkSamples);
+        const pcm16 = new Int16Array(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          const s = Math.max(-1, Math.min(1, slice[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        socket.send(pcm16.buffer);
+        offset += chunkSamples;
+      }, 240);
+    }
+
+    // 6. Dừng Thu Âm & Tạo File RTTM Tức Thì
+    function stopStreaming() {
+      isStreaming = false;
       if (processorNode) processorNode.disconnect();
       if (micStream) micStream.getTracks().forEach(t => t.stop());
       if (audioContext) audioContext.close();
 
       document.getElementById("btnStart").disabled = false;
       document.getElementById("btnStop").disabled = true;
+
+      // Sinh file RTTM từ các chunks đã lưu
+      generateAndDisplayRttm();
     }
 
-    window.onload = connectWebSocket;
+    function generateAndDisplayRttm() {
+      if (recordedChunks.length === 0) {
+        alert("Chưa ghi nhận được âm thanh nào để xuất RTTM!");
+        return;
+      }
+
+      // Thuật toán gộp các chunk liên tục của cùng speaker
+      const speakerIntervals = {};
+      recordedChunks.forEach(chunk => {
+        chunk.active_speakers.forEach(spk => {
+          const sid = spk.speaker_id;
+          if (!speakerIntervals[sid]) speakerIntervals[sid] = [];
+          speakerIntervals[sid].push({ start: chunk.time_start_sec, end: chunk.time_end_sec });
+        });
+      });
+
+      const rttmLines = [];
+      const uri = selectedAudioFile ? selectedAudioFile.name.replace(/\\.[^/.]+$/, "") : "live_stream_session";
+
+      Object.keys(speakerIntervals).sort().forEach(spkId => {
+        const intervals = speakerIntervals[spkId].sort((a, b) => a.start - b.start);
+        let curStart = null;
+        let curEnd = null;
+
+        intervals.forEach(it => {
+          if (curStart === null) {
+            curStart = it.start;
+            curEnd = it.end;
+          } else {
+            // Nối khoảng ngắt nhỏ hơn 0.15s (min_gap_off)
+            if (it.start - curEnd <= 0.16) {
+              curEnd = it.end;
+            } else {
+              const dur = curEnd - curStart;
+              if (dur >= 0.05) {
+                rttmLines.push(`SPEAKER ${uri} 1 ${curStart.toFixed(2)} ${dur.toFixed(2)} <NA> <NA> ${spkId} <NA> <NA>`);
+              }
+              curStart = it.start;
+              curEnd = it.end;
+            }
+          }
+        });
+
+        if (curStart !== null) {
+          const dur = curEnd - curStart;
+          if (dur >= 0.05) {
+            rttmLines.push(`SPEAKER ${uri} 1 ${curStart.toFixed(2)} ${dur.toFixed(2)} <NA> <NA> ${spkId} <NA> <NA>`);
+          }
+        }
+      });
+
+      // Sắp xếp theo mốc thời gian bắt đầu
+      rttmLines.sort((a, b) => parseFloat(a.split(/\\s+/)[3]) - parseFloat(b.split(/\\s+/)[3]));
+
+      currentHypothesisRttm = rttmLines.join("\\n");
+      document.getElementById("rttmOutputBox").innerText = currentHypothesisRttm || "Không có đoạn phát biểu nào được ghi nhận.";
+      document.getElementById("resultsSection").style.display = "flex";
+
+      // Nếu có Ground Truth RTTM, tự động tính toán metrics luôn
+      const gtText = document.getElementById("gtRttmText").value.trim();
+      if (gtText && currentHypothesisRttm) {
+        calculateMetricsNow();
+      } else {
+        document.getElementById("noGtNotice").style.display = "flex";
+        document.getElementById("metricsScorecard").style.display = "none";
+      }
+    }
+
+    // 7. Gọi API Chấm Điểm Metrics NIST với Ground Truth
+    async function calculateMetricsNow() {
+      const gtText = document.getElementById("gtRttmText").value.trim();
+      if (!gtText) {
+        alert("Vui lòng tải lên hoặc dán nội dung Ground Truth RTTM trước!");
+        return;
+      }
+      if (!currentHypothesisRttm) {
+        alert("Chưa có kết quả RTTM dự đoán!");
+        return;
+      }
+
+      try {
+        const resp = await fetch("/api/evaluate_rttm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reference_rttm: gtText,
+            hypothesis_rttm: currentHypothesisRttm
+          })
+        });
+        const res = await resp.json();
+
+        if (res.status === "success") {
+          const m = res.metrics;
+          document.getElementById("valDerC0").innerText = `${m.der_collar0.toFixed(2)}%`;
+          document.getElementById("valDerC0Sub").innerText = `Miss: ${m.miss_rate_c0}% | FA: ${m.false_alarm_c0}% | Conf: ${m.confusion_c0}%`;
+          document.getElementById("valDerC025").innerText = `${m.der_collar025.toFixed(2)}%`;
+          document.getElementById("valJer").innerText = `${m.jer.toFixed(2)}%`;
+          document.getElementById("valSca").innerText = m.speaker_count_match ? "✅ CHÍNH XÁC" : "⚠️ SAI LỆCH";
+          document.getElementById("valScaSub").innerText = `Ref: ${m.ref_speakers} spks | Hyp: ${m.hyp_speakers} spks`;
+
+          document.getElementById("metricsScorecard").style.display = "flex";
+          document.getElementById("noGtNotice").style.display = "none";
+        } else {
+          alert("Lỗi tính toán metrics: " + res.message);
+        }
+      } catch (err) {
+        alert("Không thể kết nối đến API tính toán metrics: " + err);
+      }
+    }
+
+    function copyRttmToClipboard() {
+      if (!currentHypothesisRttm) return;
+      navigator.clipboard.writeText(currentHypothesisRttm).then(() => {
+        alert("Đã sao chép nội dung RTTM vào bộ nhớ đệm!");
+      });
+    }
+
+    function downloadRttmFile() {
+      if (!currentHypothesisRttm) return;
+      const blob = new Blob([currentHypothesisRttm], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "hypothesis_output.rttm";
+      a.click();
+    }
+
+    function resetAll() {
+      if (isStreaming) stopStreaming();
+      recordedChunks = [];
+      currentHypothesisRttm = "";
+      document.getElementById("timelineLog").innerHTML = "";
+      document.getElementById("rttmOutputBox").innerText = "Chưa có kết quả RTTM.";
+      document.getElementById("resultsSection").style.display = "none";
+      document.getElementById("metricsScorecard").style.display = "none";
+      document.getElementById("streamTimeLabel").innerText = "0.00s";
+      document.getElementById("chunkCountLabel").innerText = "0 chunks";
+      document.getElementById("valLatency").innerText = "-- ms";
+      document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`spkBadge_${i}`).classList.remove("active");
+        document.getElementById(`spkStatus_${i}`).innerText = "Im lặng";
+      }
+    }
+
+    window.onload = () => connectWebSocket();
   </script>
 </body>
 </html>
