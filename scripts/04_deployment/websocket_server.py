@@ -198,6 +198,14 @@ class DiarizationSession:
         self.created_at = time.time()
         self.active_speaker_history: List[str] = []
 
+    def reset(self):
+        """Khôi phục trạng thái ban đầu của session: xóa sạch ring buffer và lịch sử xác suất."""
+        self.ring_buffer = AudioRingBuffer(sample_rate=self.sample_rate)
+        self.full_probs_so_far = None
+        self.chunk_count = 0
+        self.active_speaker_history = []
+        self.created_at = time.time()
+
     def get_inference_window(self) -> Tuple[np.ndarray, int, int]:
         """
         Trích xuất cửa sổ trượt: [History | Current Chunk | Lookahead]
@@ -599,10 +607,9 @@ async def websocket_diarize(
                     data = json.loads(message["text"])
                     action = data.get("action")
                     if action == "reset":
-                        session.ring_buffer = AudioRingBuffer(sample_rate=DEFAULT_SAMPLE_RATE)
-                        session.full_probs_so_far = None
-                        session.chunk_count = 0
+                        session.reset()
                         await websocket.send_json({"type": "reset_ack", "session_id": session_id})
+                        print(f"[*] Phiên {session_id} đã RESET sạch trạng thái về 0.0s")
                     elif action == "ping":
                         await websocket.send_json({"type": "pong", "server_time": time.time()})
                 except Exception as e:
@@ -624,7 +631,7 @@ async def websocket_diarize(
 @app.get("/", response_class=HTMLResponse)
 def get_demo_ui():
     """Giao diện web trực quan, hiện đại: Hỗ trợ Live Mic / File Stream, Xuất RTTM tức thì & Đo Metrics với Ground Truth."""
-    html_content = """
+    html_content = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -832,27 +839,24 @@ def get_demo_ui():
     /* Active Speakers */
     .speaker-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 10px;
     }
     .spk-badge {
       background: rgba(255, 255, 255, 0.03);
       border: 1px solid var(--card-border);
       border-radius: 10px;
-      padding: 10px;
+      padding: 10px 12px;
       display: flex;
       align-items: center;
       gap: 10px;
+      min-width: 0;
+      overflow: hidden;
       transition: all 0.2s ease;
     }
-    .spk-badge.active {
-      border-color: var(--accent-cyan);
-      background: rgba(6, 182, 212, 0.14);
-      box-shadow: 0 0 14px rgba(6, 182, 212, 0.35);
-      transform: translateY(-2px);
-    }
     .spk-avatar {
-      width: 32px; height: 32px;
+      width: 34px; height: 34px;
+      flex-shrink: 0;
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.08);
       display: flex;
@@ -860,13 +864,67 @@ def get_demo_ui():
       justify-content: center;
       font-weight: 700;
       font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
     }
-    .spk-badge.active .spk-avatar {
-      background: var(--accent-cyan);
-      color: #000;
+    .spk-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      overflow: hidden;
     }
-    .spk-title { font-size: 13px; font-weight: 600; }
-    .spk-status { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+    .spk-title {
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .spk-status {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Đổi màu badge theo từng speaker khi kích hoạt */
+    .spk-badge.spk-0.active {
+      border-color: #3b82f6;
+      background: rgba(59, 130, 246, 0.16);
+      box-shadow: 0 0 14px rgba(59, 130, 246, 0.35);
+      transform: translateY(-2px);
+    }
+    .spk-badge.spk-0.active .spk-avatar { background: #3b82f6; color: #fff; }
+    .spk-badge.spk-0.active .spk-status { color: #93c5fd; font-weight: 600; }
+
+    .spk-badge.spk-1.active {
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.16);
+      box-shadow: 0 0 14px rgba(16, 185, 129, 0.35);
+      transform: translateY(-2px);
+    }
+    .spk-badge.spk-1.active .spk-avatar { background: #10b981; color: #fff; }
+    .spk-badge.spk-1.active .spk-status { color: #6ee7b7; font-weight: 600; }
+
+    .spk-badge.spk-2.active {
+      border-color: #f59e0b;
+      background: rgba(245, 158, 11, 0.16);
+      box-shadow: 0 0 14px rgba(245, 158, 11, 0.35);
+      transform: translateY(-2px);
+    }
+    .spk-badge.spk-2.active .spk-avatar { background: #f59e0b; color: #000; }
+    .spk-badge.spk-2.active .spk-status { color: #fde68a; font-weight: 600; }
+
+    .spk-badge.spk-3.active {
+      border-color: #ec4899;
+      background: rgba(236, 72, 153, 0.16);
+      box-shadow: 0 0 14px rgba(236, 72, 153, 0.35);
+      transform: translateY(-2px);
+    }
+    .spk-badge.spk-3.active .spk-avatar { background: #ec4899; color: #fff; }
+    .spk-badge.spk-3.active .spk-status { color: #fbcfe8; font-weight: 600; }
 
     /* Waveform Canvas */
     .visualizer-box {
@@ -1120,20 +1178,21 @@ def get_demo_ui():
     let isStreaming = false;
     let inputMode = 'mic'; // 'mic' | 'file'
     let selectedAudioFile = null;
+    let fileStreamInterval = null;
 
     // Bộ nhớ lưu trữ tất cả các chunks đã nhận được trong phiên
     let recordedChunks = [];
     let currentHypothesisRttm = "";
 
-    // 1. Khởi tạo 4 Speaker slots
+    // 1. Khởi tạo 4 Speaker slots với giao diện và màu sắc đồng bộ
     const speakerSlotsEl = document.getElementById("speakerSlots");
     for (let i = 0; i < 4; i++) {
       const badge = document.createElement("div");
-      badge.className = "spk-badge";
+      badge.className = `spk-badge spk-${i}`;
       badge.id = `spkBadge_${i}`;
       badge.innerHTML = `
         <div class="spk-avatar">S${i}</div>
-        <div>
+        <div class="spk-info">
           <div class="spk-title">SPK_${String(i).padStart(2, '0')}</div>
           <div class="spk-status" id="spkStatus_${i}">Im lặng</div>
         </div>
@@ -1150,9 +1209,13 @@ def get_demo_ui():
       document.getElementById("fileUploadRow").style.display = (mode === 'file') ? "block" : "none";
     }
 
-    function handleAudioFileSelect(e) {
+    async function handleAudioFileSelect(e) {
       const file = e.target.files[0];
       if (file) {
+        if (isStreaming) {
+          stopStreaming();
+        }
+        await resetAll();
         selectedAudioFile = file;
         document.getElementById("audioFileName").innerText = `${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`;
       }
@@ -1166,6 +1229,10 @@ def get_demo_ui():
           document.getElementById("gtRttmText").value = event.target.result;
           document.getElementById("rttmFileName").innerText = file.name;
           updateGtStats();
+          // Nếu đã có kết quả dự đoán (currentHypothesisRttm), tự động cập nhật bảng điểm metrics luôn
+          if (currentHypothesisRttm) {
+            calculateMetricsNow();
+          }
         };
         reader.readAsText(file);
       }
@@ -1178,10 +1245,10 @@ def get_demo_ui():
         document.getElementById("gtBadge").style.color = "var(--accent-orange)";
         return;
       }
-      const lines = txt.split('\\n').filter(l => l.trim().startsWith("SPEAKER"));
+      const lines = txt.split('\n').filter(l => l.trim().startsWith("SPEAKER"));
       const spks = new Set();
       lines.forEach(l => {
-        const p = l.trim().split(/\\s+/);
+        const p = l.trim().split(/\s+/);
         if (p.length >= 8) spks.add(p[7]);
       });
       document.getElementById("gtBadge").innerText = `Đã nạp: ${spks.size} người nói (${lines.length} đoạn)`;
@@ -1212,6 +1279,35 @@ def get_demo_ui():
         document.getElementById("wsStatus").style.color = '#ef4444';
         if (isStreaming) stopStreaming();
       };
+    }
+
+    // Gửi lệnh RESET lên server và đợi server xác nhận đã xóa sạch ring buffer và đưa timestamp về 0.0s
+    function sendResetToServer() {
+      return new Promise((resolve) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          resolve();
+          return;
+        }
+        let resolved = false;
+        const onResetAck = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'reset_ack') {
+              resolved = true;
+              socket.removeEventListener('message', onResetAck);
+              resolve();
+            }
+          } catch (e) {}
+        };
+        socket.addEventListener('message', onResetAck);
+        socket.send(JSON.stringify({ action: "reset" }));
+        setTimeout(() => {
+          if (!resolved) {
+            socket.removeEventListener('message', onResetAck);
+            resolve();
+          }
+        }, 250);
+      });
     }
 
     // 4. Xử lý sự kiện nhận từ server
@@ -1265,11 +1361,33 @@ def get_demo_ui():
     }
 
     async function startStreamingAction() {
+      // 1. Dừng interval cũ nếu còn
+      if (fileStreamInterval) {
+        clearInterval(fileStreamInterval);
+        fileStreamInterval = null;
+      }
+
+      // 2. Gửi lệnh reset lên server để xóa sạch buffer và đưa timestamp về 0.0s
+      await sendResetToServer();
+
+      // 3. Khởi tạo lại trạng thái UI & client
       recordedChunks = [];
+      currentHypothesisRttm = "";
       document.getElementById("timelineLog").innerHTML = "";
+      document.getElementById("rttmOutputBox").innerText = "Chưa có kết quả RTTM.";
       document.getElementById("resultsSection").style.display = "none";
       document.getElementById("metricsScorecard").style.display = "none";
+      document.getElementById("streamTimeLabel").innerText = "0.00s";
+      document.getElementById("chunkCountLabel").innerText = "0 chunks";
+      document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
+      for (let i = 0; i < 4; i++) {
+        const badge = document.getElementById(`spkBadge_${i}`);
+        if (badge) badge.classList.remove("active");
+        const statusEl = document.getElementById(`spkStatus_${i}`);
+        if (statusEl) statusEl.innerText = "Im lặng";
+      }
 
+      // 4. Khởi chạy luồng thu âm hoặc stream file
       if (inputMode === 'mic') {
         startMicCapture();
       } else {
@@ -1331,10 +1449,20 @@ def get_demo_ui():
       const chunkSamples = 3840; // 240ms @ 16kHz
 
       let offset = 0;
-      const streamLoop = setInterval(() => {
-        if (!isStreaming || offset >= floatData.length || socket.readyState !== WebSocket.OPEN) {
-          clearInterval(streamLoop);
-          if (isStreaming) stopStreaming();
+      fileStreamInterval = setInterval(() => {
+        if (!isStreaming || socket.readyState !== WebSocket.OPEN) {
+          clearInterval(fileStreamInterval);
+          fileStreamInterval = null;
+          return;
+        }
+
+        if (offset >= floatData.length) {
+          clearInterval(fileStreamInterval);
+          fileStreamInterval = null;
+          // Chờ 350ms để server kịp nhận và xử lý trọn vẹn chunk cuối trước khi xuất RTTM
+          setTimeout(() => {
+            if (isStreaming) stopStreaming();
+          }, 350);
           return;
         }
 
@@ -1352,12 +1480,34 @@ def get_demo_ui():
     // 6. Dừng Thu Âm & Tạo File RTTM Tức Thì
     function stopStreaming() {
       isStreaming = false;
-      if (processorNode) processorNode.disconnect();
-      if (micStream) micStream.getTracks().forEach(t => t.stop());
-      if (audioContext) audioContext.close();
+      if (fileStreamInterval) {
+        clearInterval(fileStreamInterval);
+        fileStreamInterval = null;
+      }
+      if (processorNode) {
+        try { processorNode.disconnect(); } catch (e) {}
+        processorNode = null;
+      }
+      if (micStream) {
+        try { micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        micStream = null;
+      }
+      if (audioContext && audioContext.state !== 'closed') {
+        try { audioContext.close(); } catch (e) {}
+        audioContext = null;
+      }
 
       document.getElementById("btnStart").disabled = false;
       document.getElementById("btnStop").disabled = true;
+
+      // Trả lại trạng thái các loa về Im lặng
+      for (let i = 0; i < 4; i++) {
+        const badge = document.getElementById(`spkBadge_${i}`);
+        if (badge) badge.classList.remove("active");
+        const statusEl = document.getElementById(`spkStatus_${i}`);
+        if (statusEl) statusEl.innerText = "Im lặng";
+      }
+      document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
 
       // Sinh file RTTM từ các chunks đã lưu
       generateAndDisplayRttm();
@@ -1380,7 +1530,7 @@ def get_demo_ui():
       });
 
       const rttmLines = [];
-      const uri = selectedAudioFile ? selectedAudioFile.name.replace(/\\.[^/.]+$/, "") : "live_stream_session";
+      const uri = selectedAudioFile ? selectedAudioFile.name.replace(/\.[^/.]+$/, "") : "live_stream_session";
 
       Object.keys(speakerIntervals).sort().forEach(spkId => {
         const intervals = speakerIntervals[spkId].sort((a, b) => a.start - b.start);
@@ -1415,9 +1565,9 @@ def get_demo_ui():
       });
 
       // Sắp xếp theo mốc thời gian bắt đầu
-      rttmLines.sort((a, b) => parseFloat(a.split(/\\s+/)[3]) - parseFloat(b.split(/\\s+/)[3]));
+      rttmLines.sort((a, b) => parseFloat(a.split(/\s+/)[3]) - parseFloat(b.split(/\s+/)[3]));
 
-      currentHypothesisRttm = rttmLines.join("\\n");
+      currentHypothesisRttm = rttmLines.join("\n");
       document.getElementById("rttmOutputBox").innerText = currentHypothesisRttm || "Không có đoạn phát biểu nào được ghi nhận.";
       document.getElementById("resultsSection").style.display = "flex";
 
@@ -1489,11 +1639,37 @@ def get_demo_ui():
       a.click();
     }
 
-    function resetAll() {
-      if (isStreaming) stopStreaming();
+    async function resetAll() {
+      if (isStreaming) {
+        isStreaming = false;
+        document.getElementById("btnStart").disabled = false;
+        document.getElementById("btnStop").disabled = true;
+      }
+      if (fileStreamInterval) {
+        clearInterval(fileStreamInterval);
+        fileStreamInterval = null;
+      }
+      if (processorNode) {
+        try { processorNode.disconnect(); } catch (e) {}
+        processorNode = null;
+      }
+      if (micStream) {
+        try { micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        micStream = null;
+      }
+      if (audioContext && audioContext.state !== 'closed') {
+        try { audioContext.close(); } catch (e) {}
+        audioContext = null;
+      }
+
+      // Xóa sạch dữ liệu client
       recordedChunks = [];
       currentHypothesisRttm = "";
-      document.getElementById("timelineLog").innerHTML = "";
+      document.getElementById("timelineLog").innerHTML = `
+        <div style="color: var(--text-muted); text-align: center; margin-top: 40px;">
+          Bấm 'Bắt Đầu Thu' để xem sự kiện phân đoạn...
+        </div>
+      `;
       document.getElementById("rttmOutputBox").innerText = "Chưa có kết quả RTTM.";
       document.getElementById("resultsSection").style.display = "none";
       document.getElementById("metricsScorecard").style.display = "none";
@@ -1502,9 +1678,14 @@ def get_demo_ui():
       document.getElementById("valLatency").innerText = "-- ms";
       document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
       for (let i = 0; i < 4; i++) {
-        document.getElementById(`spkBadge_${i}`).classList.remove("active");
-        document.getElementById(`spkStatus_${i}`).innerText = "Im lặng";
+        const badge = document.getElementById(`spkBadge_${i}`);
+        if (badge) badge.classList.remove("active");
+        const statusEl = document.getElementById(`spkStatus_${i}`);
+        if (statusEl) statusEl.innerText = "Im lặng";
       }
+
+      // Gửi reset lên server
+      await sendResetToServer();
     }
 
     window.onload = () => connectWebSocket();
