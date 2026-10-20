@@ -59,15 +59,19 @@ def resolve_file_path(path_str: str) -> str:
             Path("/content/drive/MyDrive/diarization") / sub_rel,
             Path("/content/drive/MyDrive") / sub_rel,
         ]
-        # Thử cả trường hợp file nằm trong javis/ trên Drive
+        # Thử cả trường hợp file nằm trong javis/ trên Drive hoặc giải nén lồng thư mục data_audio_standard
         if "data/javis/" in norm_path:
             javis_sub = norm_path[norm_path.find("javis/"):]
+            pure_sub = javis_sub.replace("javis/", "")
             candidates.extend([
                 Path.cwd() / "data" / javis_sub,
                 Path("/content/diarization/data") / javis_sub,
+                Path("/content/diarization/data/javis/data_audio_standard") / pure_sub,
+                Path("/content/diarization/data/data_audio_standard") / pure_sub,
                 Path("/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/data") / javis_sub,
                 Path("/content/drive/MyDrive") / javis_sub,
-                Path("/content/drive/MyDrive/javis") / javis_sub.replace("javis/", "")
+                Path("/content/drive/MyDrive/javis") / pure_sub,
+                Path("/content/drive/MyDrive/data_audio_standard") / pure_sub
             ])
 
         for cand in candidates:
