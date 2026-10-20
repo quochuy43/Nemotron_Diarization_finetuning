@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemotron-3 Real-Time Diarization & Benchmark Hub</title>
+  
+  <!-- Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Modular Stylesheet -->
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <h1>NVIDIA Nemotron-3 Diarization</h1>
+        <p>Production Streaming Hub (0.32s SLA) & NIST RTTM Evaluation Playground</p>
+      </div>
+      <div class="status-badge" id="wsStatus">
+        <span class="status-dot"></span> SẴN SÀNG KẾT NỐI
+      </div>
+    </header>
+
+    <div class="grid-main">
+      <!-- Cột Trái: Điều Khiển + Ground Truth + Kết Quả RTTM -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+        
+        <!-- CARD 1: ĐIỀU KHIỂN STREAMING -->
+        <div class="card">
+          <div class="card-header">
+            <span>🎙️ NGUỒN ÂM THANH STREAMING</span>
+            <span style="font-size: 11px; color: var(--accent-cyan);" id="streamTimeLabel">0.00s</span>
+          </div>
+
+          <div class="tab-group">
+            <button class="tab-btn active" id="tabMic" onclick="switchInputMode('mic')">Microphone Trực Tiếp</button>
+            <button class="tab-btn" id="tabFile" onclick="switchInputMode('file')">Stream File WAV / MP3</button>
+          </div>
+
+          <div id="fileUploadRow" style="display: none;">
+            <div class="file-input-wrapper">
+              <label class="custom-file-btn" for="audioFileInput">📁 Chọn File Âm Thanh...</label>
+              <input type="file" id="audioFileInput" accept="audio/*" onchange="handleAudioFileSelect(event)">
+              <span id="audioFileName" style="font-size: 12px; color: var(--text-muted);">Chưa chọn file âm thanh</span>
+            </div>
+          </div>
+
+          <div class="controls-row">
+            <button class="btn btn-primary" id="btnStart" onclick="startStreaming()">
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              Bắt Đầu Thu / Stream
+            </button>
+            <button class="btn btn-danger" id="btnStop" onclick="stopStreaming()" disabled>
+              <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg>
+              Dừng Thu Âm & Xuất RTTM
+            </button>
+            <button class="btn btn-secondary" onclick="resetAll()">Làm Mới</button>
+          </div>
+
+          <div class="visualizer-box">
+            <canvas id="waveformCanvas"></canvas>
+          </div>
+        </div>
+
+        <!-- CARD 2: GROUND TRUTH RTTM (TẢI LÊN ĐỂ ĐỐI CHIẾU) -->
+        <div class="card">
+          <div class="card-header">
+            <span>📁 GROUND TRUTH (NHÃN RTTM GỐC ĐỂ CHẤM ĐIỂM METRICS)</span>
+            <span id="gtBadge" style="font-size: 11px; color: var(--accent-orange);">Chưa có nhãn gốc</span>
+          </div>
+
+          <div class="gt-box">
+            <div class="file-input-wrapper">
+              <label class="custom-file-btn" for="rttmFileInput">Tải Lên File .rttm</label>
+              <input type="file" id="rttmFileInput" accept=".rttm,.txt" onchange="handleRttmFileSelect(event)">
+              <span id="rttmFileName" style="font-size: 12px; color: var(--text-muted);">Hoặc dán nội dung RTTM trực tiếp vào ô bên dưới</span>
+            </div>
+            <textarea id="gtRttmText" rows="3" placeholder="SPEAKER audio_name 1 0.00 4.52 <NA> <NA> SPEAKER_01 <NA> <NA>&#10;SPEAKER audio_name 1 5.10 3.20 <NA> <NA> SPEAKER_02 <NA> <NA>" style="background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 8px; resize: vertical;" oninput="updateGtStats()"></textarea>
+          </div>
+        </div>
+
+        <!-- CARD 3: BẢNG KẾT QUẢ ĐO ĐẠC METRICS & HYPOTHESIS RTTM (HIỆN KHI DỪNG THU ÂM) -->
+        <div class="card results-card" id="resultsSection" style="display: none;">
+          <div class="card-header">
+            <span>🏆 KẾT QUẢ NGHIỆM THU RTTM & ĐỐI CHIẾU METRICS</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="custom-file-btn" onclick="copyRttmToClipboard()">📋 Sao Chép RTTM</button>
+              <button class="custom-file-btn" onclick="downloadRttmFile()">💾 Tải Về .rttm</button>
+            </div>
+          </div>
+
+          <!-- Scorecard khi có Ground Truth -->
+          <div id="metricsScorecard" style="display: none; flex-direction: column; gap: 10px;">
+            <div style="font-size: 13px; font-weight: 600; color: #a78bfa;">📊 BẢNG ĐIỂM CHUẨN NIST (SO SÁNH VỚI GROUND TRUTH):</div>
+            <div class="metric-grid">
+              <div class="metric-item winner">
+                <span class="metric-label">DER Collar 0.0s (Nghiêm ngặt)</span>
+                <span class="metric-value" id="valDerC0">--%</span>
+                <span class="metric-sub" id="valDerC0Sub">Miss: --% | FA: --% | Conf: --%</span>
+              </div>
+              <div class="metric-item winner">
+                <span class="metric-label">DER Collar 0.25s (Chuẩn NIST)</span>
+                <span class="metric-value" id="valDerC025" style="color: #10b981;">--%</span>
+                <span class="metric-sub">Khoảng dung sai tiêu chuẩn</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Jaccard Error Rate (JER)</span>
+                <span class="metric-value" id="valJer">--%</span>
+                <span class="metric-sub">Độ phủ phân đoạn người nói</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Độ Chính Xác Đếm Người (SCA)</span>
+                <span class="metric-value" id="valSca">--</span>
+                <span class="metric-sub" id="valScaSub">Ref: - | Hyp: -</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="noGtNotice" style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 10px 14px; border-radius: 8px; font-size: 12px; color: var(--text-muted);">
+            <span>Chưa có Ground Truth RTTM để đối chiếu metrics. Hãy tải file RTTM lên và bấm nút tính điểm:</span>
+            <button class="custom-file-btn" onclick="calculateMetricsNow()">🎯 Tính Toán Metrics Ngay</button>
+          </div>
+
+          <!-- RTTM Output Preview -->
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--text-muted);">📜 FILE RTTM XUẤT XƯỞNG CHUẨN NIST (HYPOTHESIS OUTPUT):</span>
+            <div class="rttm-box" id="rttmOutputBox">Chưa có kết quả RTTM.</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Cột Phải: Trạng Thái Người Nói & Timeline Event -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+        
+        <!-- CARD 4: TRẠNG THÁI NGƯỜI NÓI HIỆN TẠI -->
+        <div class="card">
+          <div class="card-header">
+            <span>🔊 TRẠNG THÁI NGƯỜI NÓI (LIVE)</span>
+            <span style="font-size: 11px; color: var(--accent-cyan);" id="activeSpeakerCountLabel">0 người</span>
+          </div>
+
+          <div class="speaker-grid" id="speakerSlots">
+            <!-- 4 Speaker Badges (Ma trận 2x2 gọn gàng, khởi tạo qua js/app.js) -->
+          </div>
+
+          <div style="display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--card-border); font-size: 12px;">
+            <span>Độ trễ chunk hiện tại:</span>
+            <span style="font-family:'JetBrains Mono'; font-weight:700; color:var(--accent-cyan);" id="valLatency">-- ms</span>
+          </div>
+        </div>
+
+        <!-- CARD 5: TIMELINE LOGS -->
+        <div class="card" style="flex: 1;">
+          <div class="card-header">
+            <span>📋 NHẬT KÝ SỰ KIỆN (REAL-TIME TIMELINE)</span>
+            <span style="font-size: 11px; color: var(--text-muted);" id="chunkCountLabel">0 chunks</span>
+          </div>
+
+          <div class="timeline-log" id="timelineLog">
+            <div style="color: var(--text-muted); text-align: center; margin-top: 40px;">
+              Bấm 'Bắt Đầu Thu' để xem sự kiện phân đoạn...
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Modular Application Logic -->
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

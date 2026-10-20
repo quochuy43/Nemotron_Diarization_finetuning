@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  diarization-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nemotron-diarization-service:v1.3
+    container_name: nemotron_diarization_prod
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HOST=0.0.0.0
+      - PORT=8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
