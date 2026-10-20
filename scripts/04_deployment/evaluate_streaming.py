@@ -280,20 +280,14 @@ def run_streaming_comparison(
     # 1. Dò tìm đường dẫn checkpoint của v1.1
     v1_1_candidates = [
         model_v1_1_path or "",
-        "experiments/checkpoints/v1_1_swa_model/model_swa.pt",
-        "experiments/checkpoints/v1_1_swa_model/model_swa_v2_0.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v1_1_swa_model/model_swa_v2_0.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3_swa_model/model_swa.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v2_0_swa_model/model_swa_v2_0.pt"
+        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_1_ratio_1_3_swa_model/train_v1_1_ratio_1_3_swa_model.pt"
     ]
     resolved_v1_1 = find_checkpoint(v1_1_candidates)
 
     # 2. Dò tìm đường dẫn checkpoint của v1.3
     v1_3_candidates = [
         model_v1_3_path or "",
-        "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v1_3_swa_model/model_swa.pt"
+        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt"
     ]
     resolved_v1_3 = find_checkpoint(v1_3_candidates)
 
