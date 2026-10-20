@@ -163,6 +163,30 @@ class StreamingDiarizationEngine:
 # 3. HÀM THU THẬP HỒ SƠ PHẦN CỨNG & MÔ HÌNH (SPECS PROFILER)
 # ===============================================================================
 
+def safe_cuda_reset_peak_memory():
+    """Reset peak memory stats an toàn tuyệt đối, tránh lỗi driver/PyTorch."""
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.init()
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+
+
+def safe_get_cuda_memory() -> Tuple[float, float, float]:
+    """Trả về (allocated_mb, reserved_mb, peak_mb) an toàn."""
+    allocated_mb, reserved_mb, peak_mb = 0.0, 0.0, 0.0
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.init()
+            allocated_mb = round(torch.cuda.memory_allocated() / (1024 ** 2), 2)
+            reserved_mb = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
+            peak_mb = round(torch.cuda.max_memory_allocated() / (1024 ** 2), 2)
+        except Exception:
+            pass
+    return allocated_mb, reserved_mb, peak_mb
+
+
 def collect_system_and_model_profile(
     model: Any,
     model_path: str,
@@ -180,17 +204,31 @@ def collect_system_and_model_profile(
     if os.path.exists(model_path):
         file_size_mb = round(os.path.getsize(model_path) / (1024 * 1024), 2)
 
+    gpu_name = "CPU Only"
+    gpu_count = 0
+    total_vram_gb = 0.0
+    if torch.cuda.is_available() and device.startswith("cuda"):
+        try:
+            torch.cuda.init()
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_count = torch.cuda.device_count()
+            total_vram_gb = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2)
+        except Exception:
+            pass
+
+    alloc_mb, res_mb, peak_mb = safe_get_cuda_memory()
+
     hw_info = {
         "device_type": device,
         "cuda_available": torch.cuda.is_available(),
-        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() and device.startswith("cuda") else "CPU Only",
-        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() and device.startswith("cuda") else 0,
+        "gpu_name": gpu_name,
+        "gpu_count": gpu_count,
         "cuda_version": torch.version.cuda if torch.cuda.is_available() else "N/A",
         "pytorch_version": torch.__version__,
-        "total_vram_gb": round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2) if torch.cuda.is_available() and device.startswith("cuda") else 0.0,
-        "vram_allocated_mb": round(torch.cuda.memory_allocated(0) / (1024 ** 2), 2) if torch.cuda.is_available() and device.startswith("cuda") else 0.0,
-        "vram_reserved_mb": round(torch.cuda.memory_reserved(0) / (1024 ** 2), 2) if torch.cuda.is_available() and device.startswith("cuda") else 0.0,
-        "peak_vram_mb": round(torch.cuda.max_memory_allocated(0) / (1024 ** 2), 2) if torch.cuda.is_available() and device.startswith("cuda") else 0.0,
+        "total_vram_gb": total_vram_gb,
+        "vram_allocated_mb": alloc_mb,
+        "vram_reserved_mb": res_mb,
+        "peak_vram_mb": peak_mb,
     }
 
     model_specs = {
@@ -277,9 +315,9 @@ def run_production_evaluation(
     print(f"[*] Thiết bị (Device):         {device}")
     print(f"[*] Thư mục lưu báo cáo:      {output_dir}")
 
-    # Reset max VRAM tracker
-    if torch.cuda.is_available() and device.startswith("cuda"):
-        torch.cuda.reset_peak_memory_stats(0)
+    # Reset max VRAM tracker an toàn
+    if device.startswith("cuda"):
+        safe_cuda_reset_peak_memory()
 
     # 2. Khởi tạo mô hình
     pretrained_id = "nvidia/Nemotron-3-Diarization"
@@ -352,9 +390,10 @@ def run_production_evaluation(
         write_segments_to_rttm(segs, uri=stem, rttm_path=str(out_rttm))
 
     # Cập nhật Peak VRAM sau khi chạy xong
-    if torch.cuda.is_available() and device.startswith("cuda"):
-        profile_info["hardware_info"]["peak_vram_mb"] = round(torch.cuda.max_memory_allocated(0) / (1024 ** 2), 2)
-        profile_info["hardware_info"]["vram_allocated_mb"] = round(torch.cuda.memory_allocated(0) / (1024 ** 2), 2)
+    if device.startswith("cuda"):
+        alloc_mb, _, peak_mb = safe_get_cuda_memory()
+        profile_info["hardware_info"]["peak_vram_mb"] = peak_mb
+        profile_info["hardware_info"]["vram_allocated_mb"] = alloc_mb
 
     # 5. Thống kê độ trễ Streaming
     lat_arr = np.array(all_latencies_ms)
