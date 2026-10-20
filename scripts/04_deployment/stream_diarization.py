@@ -58,11 +58,11 @@ def run_live_stream_inference(
     # 1. Dò tìm model
     candidates = [
         model_path or "",
-        "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
-        "experiments/checkpoints/v1_3_swa_model/model_swa.pt",
-        "experiments/checkpoints/v1_1_swa_model/model_swa.pt",
+        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt",
         "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
-        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v1_1_swa_model/model_swa_v2_0.pt"
+        "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa_v1_3_SWA.pt",
+        "experiments/checkpoints/train_v1_3_ratio_1_8_swa_model/model_swa.pt",
+        "/content/drive/MyDrive/VJ_Technologies/Nemotron_Diarization/experiments/checkpoints/v1_3_swa_model/model_swa.pt"
     ]
     resolved_model = find_checkpoint(candidates)
     if not resolved_model:
