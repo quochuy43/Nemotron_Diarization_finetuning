@@ -23,3 +23,7 @@ websockets>=12.0
 # NIST Diarization Evaluation Metrics (pyannote)
 pyannote.core>=5.0.0
 pyannote.metrics>=3.2.0
+
+# Resample chất lượng cao phía server (audio điện thoại 8kHz -> 16kHz).
+# Bắt buộc: resampler nội suy tuyến tính của trình duyệt làm DER xấu đi ~3 điểm.
+soxr>=0.3.7

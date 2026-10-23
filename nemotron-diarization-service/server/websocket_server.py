@@ -37,6 +37,12 @@ print("[*] Đang khởi động WebSocket Streaming Server (vui lòng chờ tron
 
 import torch
 import numpy as np
+
+try:
+    import soxr
+except ImportError:  # resample phía server sẽ bị vô hiệu hoá
+    soxr = None
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -176,10 +182,12 @@ class DiarizationSession:
         threshold: float = DEFAULT_THRESHOLD,
         min_duration_on: float = DEFAULT_MIN_SPEECH_ON,
         min_duration_off: float = DEFAULT_MIN_GAP_OFF,
-        emit_frame_probs: bool = False
+        emit_frame_probs: bool = False,
+        input_sample_rate: int = DEFAULT_SAMPLE_RATE
     ):
         self.session_id = session_id
         self.sample_rate = sample_rate
+        self.input_sample_rate = int(input_sample_rate)
         self.threshold = threshold
         self.min_duration_on = min_duration_on
         self.min_duration_off = min_duration_off
@@ -205,6 +213,39 @@ class DiarizationSession:
         self.chunk_count = 0
         self.created_at = time.time()
         self.active_speaker_history: List[str] = []
+        self._build_resampler()
+
+    def _build_resampler(self):
+        """
+        Dựng bộ resample streaming (soxr, chất lượng HQ) nếu client gửi audio
+        ở sample rate khác 16kHz.
+
+        Resample PHẢI làm ở server: trình duyệt dùng nội suy tuyến tính
+        (AudioBufferSourceNode trong OfflineAudioContext), gây méo phổ và làm
+        DER xấu đi rõ rệt trên audio điện thoại 8kHz. Dùng soxr ở đây đảm bảo
+        web UI và client Python đi qua đúng một đường xử lý tín hiệu.
+        """
+        self._resampler = None
+        if self.input_sample_rate == self.sample_rate:
+            return
+        if soxr is None:
+            raise RuntimeError(
+                f"Client gửi audio {self.input_sample_rate}Hz nhưng server thiếu gói `soxr`. "
+                f"Cài `pip install soxr` hoặc gửi audio đã resample sẵn về {self.sample_rate}Hz."
+            )
+        self._resampler = soxr.ResampleStream(
+            self.input_sample_rate, self.sample_rate, 1, dtype="float32", quality="HQ"
+        )
+
+    def set_input_sample_rate(self, rate: int):
+        """Đổi sample rate đầu vào (chỉ hợp lệ trước khi nhận audio của phiên)."""
+        rate = int(rate)
+        if rate <= 0:
+            raise ValueError(f"sample_rate không hợp lệ: {rate}")
+        if self.frames_emitted > 0 or len(self.pending) > 0:
+            raise RuntimeError("Phải đặt sample_rate TRƯỚC khi gửi audio (gửi 'reset' để bắt đầu lại).")
+        self.input_sample_rate = rate
+        self._build_resampler()
 
     # --- Nạp audio -------------------------------------------------------------
 
@@ -215,11 +256,21 @@ class DiarizationSession:
         audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
         return self.append_float32(audio_int16.astype(np.float32) / 32768.0)
 
-    def append_float32(self, samples: np.ndarray) -> int:
-        if len(samples) == 0:
+    def append_float32(self, samples: np.ndarray, last: bool = False) -> int:
+        if len(samples) == 0 and not last:
             return 0
-        self.pending = np.concatenate([self.pending, samples.astype(np.float32)])
-        return len(samples)
+        x = samples.astype(np.float32)
+        if self._resampler is not None:
+            x = self._resampler.resample_chunk(x, last=last)
+        if len(x) == 0:
+            return 0
+        self.pending = np.concatenate([self.pending, x])
+        return len(x)
+
+    def flush_resampler(self):
+        """Đẩy nốt phần đuôi còn kẹt trong bộ lọc resample (gọi khi finalize)."""
+        if self._resampler is not None:
+            self.append_float32(np.zeros(0, dtype=np.float32), last=True)
 
     # --- Điều phối chunk -------------------------------------------------------
 
@@ -611,6 +662,7 @@ async def websocket_diarize(
     min_duration_on: float = Query(DEFAULT_MIN_SPEECH_ON),
     min_duration_off: float = Query(DEFAULT_MIN_GAP_OFF),
     emit_frame_probs: bool = Query(False),
+    input_sample_rate: int = Query(DEFAULT_SAMPLE_RATE),
     key: Optional[str] = Query(None)
 ):
     """
@@ -643,6 +695,7 @@ async def websocket_diarize(
         min_duration_on=min_duration_on,
         min_duration_off=min_duration_off,
         emit_frame_probs=emit_frame_probs,
+        input_sample_rate=input_sample_rate,
     )
     active_sessions[session_id] = session
 
@@ -720,8 +773,22 @@ async def websocket_diarize(
                         print(f"[*] Phiên {session_id} đã RESET sạch trạng thái về 0.0s")
                     elif action == "ping":
                         await websocket.send_json({"type": "pong", "server_time": time.time()})
+                    elif action == "config":
+                        # Khai báo sample rate gốc của audio; server sẽ tự resample
+                        # bằng soxr HQ — đúng một đường xử lý với client Python.
+                        session.set_input_sample_rate(data.get("sample_rate", DEFAULT_SAMPLE_RATE))
+                        await websocket.send_json({
+                            "type": "config_ack",
+                            "session_id": session_id,
+                            "input_sample_rate": session.input_sample_rate,
+                            "server_resampling": session.input_sample_rate != session.sample_rate,
+                        })
+                        print(f"[*] Phiên {session_id}: nhận audio {session.input_sample_rate}Hz"
+                              + (" (server resample -> 16kHz, soxr HQ)"
+                                 if session.input_sample_rate != session.sample_rate else ""))
                     elif action == "finalize":
-                        # Xử nốt audio dư (chunk cuối không có lookahead) rồi xuất RTTM cả phiên
+                        # Đẩy nốt đuôi bộ lọc resample rồi xử nốt audio dư
+                        session.flush_resampler()
                         while session.has_enough_for_chunk():
                             await run_step(is_last=False)
                         if not session.finished:
@@ -761,11 +828,23 @@ async def websocket_diarize(
 
 @app.get("/", response_class=FileResponse)
 def get_demo_ui():
-    """Phục vụ giao diện web trực quan tách biệt từ scripts/04_deployment/frontend/index.html."""
+    """
+    Phục vụ giao diện web, gắn thêm dấu vân tay (mtime) vào CSS/JS.
+
+    Không có bước này, trình duyệt có thể giữ bản app.js cũ trong bộ nhớ đệm
+    sau khi server đã cập nhật, khiến UI chạy logic cũ và cho ra metrics khác
+    hẳn client Python — rất khó phát hiện vì mọi thứ trông vẫn bình thường.
+    """
     index_file = FRONTEND_DIR / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return HTMLResponse("<h1>404: Không tìm thấy frontend/index.html</h1>", status_code=404)
+    if not index_file.exists():
+        return HTMLResponse("<h1>404: Không tìm thấy frontend/index.html</h1>", status_code=404)
+
+    html = index_file.read_text(encoding="utf-8")
+    for rel in ("css/style.css", "js/app.js"):
+        asset = FRONTEND_DIR / rel
+        if asset.exists():
+            html = html.replace(f"/static/{rel}", f"/static/{rel}?v={int(asset.stat().st_mtime)}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 # ===============================================================================

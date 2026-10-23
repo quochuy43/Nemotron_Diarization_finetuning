@@ -21,8 +21,10 @@ experiments/baselines
 *.npz
 final_model_production_profile*.json
 nemotron-diarization-service/eval_output/
-nemotron-diarization-service/eval_output_1/
-nemotron-diarization-service/eval_output_2/
+nemotron-diarization-service/eval_output_v1/
+nemotron-diarization-service/eval_output_v2/
+nemotron-diarization-service/eval_output_v3/
+nemotron-diarization-service/youtube_3/
 
 # 3. File rác Python, IDE và hệ điều hành
 __pycache__/

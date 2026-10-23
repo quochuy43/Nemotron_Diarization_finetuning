@@ -187,6 +187,39 @@ function handleDiarizationEvent(event) {
   }
 }
 
+// Khai báo sample rate gốc của audio để server tự resample bằng soxr HQ.
+// Phải gửi SAU "reset" và TRƯỚC gói audio đầu tiên.
+function sendConfigToServer(sampleRate) {
+  return new Promise((resolve) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const onAck = (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch (e) { return; }
+      if (data.type === 'config_ack') {
+        settled = true;
+        socket.removeEventListener('message', onAck);
+        resolve(true);
+      } else if (data.type === 'error') {
+        settled = true;
+        socket.removeEventListener('message', onAck);
+        console.error('[Audio] config bị từ chối:', data.message);
+        resolve(false);
+      }
+    };
+    socket.addEventListener('message', onAck);
+    socket.send(JSON.stringify({ action: "config", sample_rate: sampleRate }));
+    setTimeout(() => {
+      if (settled) return;
+      socket.removeEventListener('message', onAck);
+      resolve(false);
+    }, 5000);
+  });
+}
+
 // 5. Bắt đầu Stream
 function startStreaming() {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -320,21 +353,22 @@ async function startFileStreaming(file) {
     tempCtx.close();
   }
 
-  // Resample sang 16kHz chỉ khi cần (1 lần duy nhất, từ đúng sample rate gốc)
+  // KHÔNG resample ở trình duyệt. AudioBufferSourceNode trong OfflineAudioContext
+  // chỉ nội suy tuyến tính — với audio điện thoại 8kHz, cách đó làm DER xấu đi
+  // khoảng 3 điểm so với soxr HQ. Thay vào đó khai báo sample rate gốc để server
+  // resample bằng soxr, đúng một đường xử lý tín hiệu với client Python.
   if (srcRate !== 16000) {
-    const srcBuf = new AudioBuffer({ length: floatData.length, sampleRate: srcRate, numberOfChannels: 1 });
-    srcBuf.copyToChannel(floatData, 0);
-    const offCtx = new OfflineAudioContext(1, Math.ceil(floatData.length * 16000 / srcRate), 16000);
-    const src = offCtx.createBufferSource();
-    src.buffer = srcBuf;
-    src.connect(offCtx.destination);
-    src.start();
-    const resampled = await offCtx.startRendering();
-    floatData = resampled.getChannelData(0);
-    console.log('[Audio] Resampled', srcRate, '→ 16000, samples:', floatData.length);
+    const ack = await sendConfigToServer(srcRate);
+    if (!ack) {
+      alert(`Server không chấp nhận audio ${srcRate}Hz. Hãy chuyển file về 16kHz mono rồi thử lại.`);
+      stopStreaming();
+      return;
+    }
+    console.log('[Audio] Server sẽ resample', srcRate, '→ 16000 (soxr HQ)');
   }
 
-  const chunkSamples = 3840; // 240ms @ 16kHz
+  // 240ms audio ở sample rate GỐC (server quy đổi sang 16kHz)
+  const chunkSamples = Math.round(0.24 * srcRate);
   let offset = 0;
   fileStreamInterval = setInterval(() => {
     if (!isStreaming || socket.readyState !== WebSocket.OPEN) {
