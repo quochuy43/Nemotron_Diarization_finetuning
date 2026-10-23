@@ -333,6 +333,42 @@ input[type="file"] {
 .spk-badge.spk-3.active .spk-avatar { background: #ec4899; color: #fff; }
 .spk-badge.spk-3.active .spk-status { color: #fbcfe8; font-weight: 600; }
 
+.spk-badge.spk-4.active {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.16);
+  box-shadow: 0 0 14px rgba(139, 92, 246, 0.35);
+  transform: translateY(-2px);
+}
+.spk-badge.spk-4.active .spk-avatar { background: #8b5cf6; color: #fff; }
+.spk-badge.spk-4.active .spk-status { color: #c4b5fd; font-weight: 600; }
+
+.spk-badge.spk-5.active {
+  border-color: #14b8a6;
+  background: rgba(20, 184, 166, 0.16);
+  box-shadow: 0 0 14px rgba(20, 184, 166, 0.35);
+  transform: translateY(-2px);
+}
+.spk-badge.spk-5.active .spk-avatar { background: #14b8a6; color: #fff; }
+.spk-badge.spk-5.active .spk-status { color: #5eead4; font-weight: 600; }
+
+.spk-badge.spk-6.active {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.16);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.35);
+  transform: translateY(-2px);
+}
+.spk-badge.spk-6.active .spk-avatar { background: #ef4444; color: #fff; }
+.spk-badge.spk-6.active .spk-status { color: #fca5a5; font-weight: 600; }
+
+.spk-badge.spk-7.active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.16);
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.35);
+  transform: translateY(-2px);
+}
+.spk-badge.spk-7.active .spk-avatar { background: #6366f1; color: #fff; }
+.spk-badge.spk-7.active .spk-status { color: #a5b4fc; font-weight: 600; }
+
 /* Waveform Canvas */
 .visualizer-box {
   height: 60px;
@@ -442,3 +478,7 @@ canvas {
 .log-item.spk_1 { border-color: #10b981; }
 .log-item.spk_2 { border-color: #f59e0b; }
 .log-item.spk_3 { border-color: #ec4899; }
+.log-item.spk_4 { border-color: #8b5cf6; }
+.log-item.spk_5 { border-color: #14b8a6; }
+.log-item.spk_6 { border-color: #ef4444; }
+.log-item.spk_7 { border-color: #6366f1; }

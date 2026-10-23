@@ -1,21 +1,26 @@
 # ===============================================================================
-# NEMOTRON-3 DIARIZATION SERVICE - PRODUCTION DOCKERFILE
+# NEMOTRON-3 DIARIZATION SERVICE - PRODUCTION DOCKERFILE (CUDA GPU)
 # ===============================================================================
-# Hỗ trợ: NVIDIA CUDA GPU runtime
-# Khởi tạo: docker build -t nemotron-diarization-service .
-# Chạy GPU: docker run --gpus all -p 8000:8000 nemotron-diarization-service
+# Base image: NVIDIA CUDA 12.1 runtime (cần thiết để torch.cuda hoạt động)
+# Build:  docker build -t nemotron-diarization-service .
+# Run:    docker run --gpus all -p 8000:8000 nemotron-diarization-service
 # ===============================================================================
 
-FROM python:3.10-slim
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
-# Cài đặt thư viện hệ thống cần thiết cho âm thanh và compile
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+# Cài đặt Python 3.10 và thư viện hệ thống cho âm thanh
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-dev \
     build-essential \
     libsndfile1 \
     ffmpeg \
     git \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
 WORKDIR /app
 

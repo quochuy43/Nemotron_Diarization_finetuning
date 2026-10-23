@@ -76,6 +76,10 @@ DEFAULT_THRESHOLD = 0.45            # Ngưỡng kích hoạt tiếng nói tối 
 DEFAULT_MIN_SPEECH_ON = 0.05        # Lọc nhiễu < 50ms
 DEFAULT_MIN_GAP_OFF = 0.15          # Nối khoảng ngắt < 150ms
 
+DIARIZATION_API_KEY = os.environ.get("DIARIZATION_API_KEY", "")
+MAX_CONCURRENT_SESSIONS = int(os.environ.get("MAX_CONCURRENT_SESSIONS", "50"))
+MAX_WS_FRAME_BYTES = 1024 * 1024   # 1MB max per WebSocket binary frame
+
 
 # ===============================================================================
 # 2. AUDIO RING BUFFER: BỘ ĐỆM XOAY VÒNG CHO TỪNG PHIÊN (PER-SESSION BUFFER)
@@ -300,7 +304,10 @@ class ModelManager:
         self.processor = None
         self.model_loaded = False
         self.model_path = None
-        self.lock = asyncio.Lock()
+        self._batch_queue: Optional[asyncio.Queue] = None
+        self._batch_task: Optional[asyncio.Task] = None
+        self._max_batch_size = 32
+        self._batch_timeout_sec = 0.005
 
     @classmethod
     def get_instance(cls):
@@ -339,15 +346,24 @@ class ModelManager:
 
         if resolved and Path(resolved).exists():
             print(f"[*] Nạp trọng số xuất xưởng SWA: {resolved}")
-            payload = torch.load(resolved, map_location="cpu")
+            payload = torch.load(resolved, map_location="cpu", weights_only=True)
             state_dict = payload.get("model_state_dict", payload.get("state_dict", payload))
-            self.model.load_state_dict(state_dict, strict=False)
+            incompatible = self.model.load_state_dict(state_dict, strict=False)
+            if incompatible.missing_keys:
+                print(f"[!] Missing keys ({len(incompatible.missing_keys)}): {incompatible.missing_keys[:5]}")
+            if incompatible.unexpected_keys:
+                print(f"[!] Unexpected keys ({len(incompatible.unexpected_keys)}): {incompatible.unexpected_keys[:5]}")
             self.model_path = resolved
         else:
             print("[!] Cảnh báo: Sử dụng Pretrained base weights (không tìm thấy checkpoint v1.3 local).")
 
         self.model.to(self.device)
         self.model.eval()
+
+        if self.device == "cuda":
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            print("[*] CUDA deterministic mode: ON (đảm bảo kết quả suy luận nhất quán giữa các lần chạy)")
 
         # Warm-up GPU 3 chunks để ổn định CUDA kernel
         print(f"[*] Thiết bị suy luận: {self.device.upper()}")
@@ -383,6 +399,107 @@ class ModelManager:
         latency_ms = (t1 - t0) * 1000.0
         return probs, latency_ms
 
+    # --- Dynamic Batching ---
+
+    async def start_batch_worker(self):
+        self._batch_queue = asyncio.Queue()
+        self._batch_task = asyncio.create_task(self._batch_loop())
+        print("[*] Dynamic Batch Worker đã khởi động.")
+
+    async def stop_batch_worker(self):
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+        if self._batch_queue:
+            while not self._batch_queue.empty():
+                try:
+                    _, fut = self._batch_queue.get_nowait()
+                    fut.set_exception(RuntimeError("Server shutting down"))
+                except asyncio.QueueEmpty:
+                    break
+        print("[*] Dynamic Batch Worker đã dừng.")
+
+    async def submit_for_inference(self, audio_slice: np.ndarray) -> Tuple[np.ndarray, float]:
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        await self._batch_queue.put((audio_slice, future))
+        return await future
+
+    async def _batch_loop(self):
+        while True:
+            first_item = await self._batch_queue.get()
+            items = [first_item]
+            deadline = asyncio.get_event_loop().time() + self._batch_timeout_sec
+            while len(items) < self._max_batch_size:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    item = await asyncio.wait_for(
+                        self._batch_queue.get(), timeout=remaining
+                    )
+                    items.append(item)
+                except asyncio.TimeoutError:
+                    break
+
+            audio_slices = [item[0] for item in items]
+            futures = [item[1] for item in items]
+            try:
+                results = await asyncio.to_thread(self._forward_batch, audio_slices)
+                for fut, result in zip(futures, results):
+                    if not fut.done():
+                        fut.set_result(result)
+            except Exception as exc:
+                for fut in futures:
+                    if not fut.done():
+                        fut.set_exception(exc)
+
+    def _forward_batch(self, audio_slices: List[np.ndarray]) -> List[Tuple[np.ndarray, float]]:
+        if len(audio_slices) == 1:
+            return [self.forward_audio_slice(audio_slices[0])]
+
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+
+        processed = [
+            self.processor(s, sampling_rate=DEFAULT_SAMPLE_RATE, return_tensors="pt")
+            for s in audio_slices
+        ]
+        max_len = max(p["input_values"].shape[-1] for p in processed)
+
+        padded_vals = []
+        mask_vals = []
+        for p in processed:
+            v = p["input_values"][0]
+            cur_len = v.shape[-1]
+            if cur_len < max_len:
+                pad = torch.zeros(max_len - cur_len, dtype=v.dtype)
+                v = torch.cat([v, pad])
+                m = torch.cat([torch.ones(cur_len), torch.zeros(max_len - cur_len)])
+            else:
+                m = torch.ones(cur_len)
+            padded_vals.append(v)
+            mask_vals.append(m)
+
+        batch_input = torch.stack(padded_vals).to(self.device)
+        batch_mask = torch.stack(mask_vals).to(self.device)
+
+        with torch.inference_mode():
+            logits = self.model(input_values=batch_input, attention_mask=batch_mask).logits
+            probs = torch.sigmoid(logits).detach().cpu().numpy()
+
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
+        latency_ms = (t1 - t0) * 1000.0
+        per_item_latency = latency_ms / len(audio_slices)
+        return [(probs[i], per_item_latency) for i in range(len(audio_slices))]
+
 
 # ===============================================================================
 # 5. KHỞI TẠO ỨNG DỤNG FASTAPI & SESSION MANAGER
@@ -394,7 +511,9 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     manager = ModelManager.get_instance()
     manager.load_model()
+    await manager.start_batch_worker()
     yield
+    await manager.stop_batch_worker()
 
 app = FastAPI(
     title="Nemotron-3 Diarization Streaming Server",
@@ -418,12 +537,9 @@ if FRONTEND_DIR.exists():
 active_sessions: Dict[str, DiarizationSession] = {}
 
 
-from pyannote.core import Annotation, Segment
-from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
-
-
-def parse_rttm_text(rttm_text: str, uri: str = "eval_session") -> Annotation:
+def parse_rttm_text(rttm_text: str, uri: str = "eval_session"):
     """Đọc chuỗi RTTM chuẩn NIST thành pyannote.core.Annotation."""
+    from pyannote.core import Annotation, Segment
     annotation = Annotation(uri=uri)
     for line in rttm_text.strip().splitlines():
         line = line.strip()
@@ -444,6 +560,7 @@ def parse_rttm_text(rttm_text: str, uri: str = "eval_session") -> Annotation:
 
 def compute_pair_metrics(ref_rttm_str: str, hyp_rttm_str: str) -> Dict[str, Any]:
     """Tính toán chi tiết các chỉ số NIST DER (c0 & c0.25), Miss, FA, Conf, JER và SCA."""
+    from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
     uri = "eval_session"
     ref = parse_rttm_text(ref_rttm_str, uri=uri)
     hyp = parse_rttm_text(hyp_rttm_str, uri=uri)
@@ -524,7 +641,8 @@ async def evaluate_rttm_api(request: Request):
 async def websocket_diarize(
     websocket: WebSocket,
     client_id: Optional[str] = Query(None),
-    threshold: float = Query(DEFAULT_THRESHOLD)
+    threshold: float = Query(DEFAULT_THRESHOLD),
+    key: Optional[str] = Query(None)
 ):
     """
     Kênh WebSocket truyền nhận âm thanh 2 chiều:
@@ -534,8 +652,19 @@ async def websocket_diarize(
     - Server trả về JSON Event ngay khi có chunk 240ms hoàn thành.
     """
     await websocket.accept()
+
+    if DIARIZATION_API_KEY and key != DIARIZATION_API_KEY:
+        await websocket.send_json({"type": "error", "message": "Invalid or missing API key"})
+        await websocket.close(code=4001)
+        return
+
+    if len(active_sessions) >= MAX_CONCURRENT_SESSIONS:
+        await websocket.send_json({"type": "error", "message": f"Server at maximum capacity ({MAX_CONCURRENT_SESSIONS} sessions)"})
+        await websocket.close(code=4002)
+        return
+
     session_id = client_id or f"sess_{uuid.uuid4().hex[:8]}"
-    
+
     session = DiarizationSession(session_id=session_id, threshold=threshold)
     active_sessions[session_id] = session
     manager = ModelManager.get_instance()
@@ -556,21 +685,20 @@ async def websocket_diarize(
     try:
         while True:
             message = await websocket.receive()
-            
+
             # 1. Nhận gói âm thanh nhị phân (Binary PCM16)
             if "bytes" in message and message["bytes"]:
                 raw_bytes = message["bytes"]
+                if len(raw_bytes) > MAX_WS_FRAME_BYTES:
+                    await websocket.send_json({"type": "error", "message": "Frame size exceeds 1MB limit"})
+                    continue
                 session.ring_buffer.append_pcm16_bytes(raw_bytes)
 
                 # 2. Kiểm tra xem đã đủ mẫu để chạy 1 chunk 240ms chưa
                 while session.ring_buffer.has_enough_for_chunk(session.chunk_samples, session.lookahead_samples):
                     audio_slice, offset_samples, emitted_len = session.get_inference_window()
 
-                    # Chạy suy luận qua model lock (tránh xung đột GPU)
-                    async with manager.lock:
-                        raw_probs, infer_latency = await asyncio.to_thread(
-                            manager.forward_audio_slice, audio_slice
-                        )
+                    raw_probs, infer_latency = await manager.submit_for_inference(audio_slice)
 
                     # Khóa kênh người nói và trích xuất danh sách active speakers
                     _, active_speakers = session.align_and_update_probs(raw_probs, offset_samples)

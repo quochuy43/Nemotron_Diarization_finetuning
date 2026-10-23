@@ -10,7 +10,7 @@ Hệ thống giao tiếp qua **WebSocket 2 chiều** với kiến trúc **Ring B
 
 ---
 
-## 📁 2. Cấu Trúc Gói Bàn Giao (Delivery Structure)
+## 📁 2. Cấu Trúc (Delivery Structure)
 
 ```text
 nemotron-diarization-service/
@@ -99,6 +99,17 @@ Chạy script giả lập gửi luồng âm thanh qua WebSocket:
 ```bash
 python client/test_websocket_client.py --audio duong/dan/file_test.wav --url ws://localhost:8000/ws/diarize
 ```
+
+### 5.3. Benchmark Đánh Giá Toàn Bộ Dataset (Batch Streaming 9 Files & NIST Metrics)
+Chạy 1 lệnh để stream toàn bộ dataset qua WebSocket, tự động sinh các file RTTM dự đoán và tính toán toàn bộ metrics chuẩn NIST (DER c0.25, DER c0, Miss, FA, Conf, JER, SCA, Latency, RTF) cho từng file và trung bình cả 9 files:
+```bash
+python client/evaluate_dataset_streaming.py --dataset-dir 9_files_v4 --output-dir eval_results
+```
+* Kết quả sinh ra:
+  * File RTTM dự đoán của từng file: `eval_results/predicted_rttm/*.rttm`
+  * Báo cáo tổng hợp JSON: `eval_results/evaluation_summary.json`
+  * Báo cáo bảng tính CSV: `eval_results/evaluation_summary.csv`
+  * Báo cáo Markdown: `eval_results/evaluation_summary.md`
 
 ---
 

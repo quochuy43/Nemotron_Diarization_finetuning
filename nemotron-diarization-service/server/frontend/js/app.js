@@ -21,7 +21,7 @@ function initSpeakerSlots() {
   const speakerSlotsEl = document.getElementById("speakerSlots");
   if (!speakerSlotsEl) return;
   speakerSlotsEl.innerHTML = "";
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     const badge = document.createElement("div");
     badge.className = `spk-badge spk-${i}`;
     badge.id = `spkBadge_${i}`;
@@ -157,7 +157,7 @@ function handleDiarizationEvent(event) {
 
   // Cập nhật card trạng thái loa
   const activeChans = new Set(event.active_speakers.map(s => s.channel_index));
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     const badge = document.getElementById(`spkBadge_${i}`);
     const statusEl = document.getElementById(`spkStatus_${i}`);
     if (activeChans.has(i)) {
@@ -177,7 +177,7 @@ function handleDiarizationEvent(event) {
     const firstChan = event.active_speakers[0].channel_index;
 
     const row = document.createElement("div");
-    row.className = `log-item spk_${firstChan % 4}`;
+    row.className = `log-item spk_${firstChan % 8}`;
     row.innerHTML = `
       <span>[${event.time_start_sec.toFixed(2)}s - ${event.time_end_sec.toFixed(2)}s] <strong>${spkNames}</strong></span>
       <span style="color:var(--text-muted);">${event.latency_ms}ms</span>
@@ -216,7 +216,7 @@ async function startStreamingAction() {
   document.getElementById("streamTimeLabel").innerText = "0.00s";
   document.getElementById("chunkCountLabel").innerText = "0 chunks";
   document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     const badge = document.getElementById(`spkBadge_${i}`);
     if (badge) badge.classList.remove("active");
     const statusEl = document.getElementById(`spkStatus_${i}`);
@@ -241,19 +241,13 @@ async function startMicCapture() {
     audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const source = audioContext.createMediaStreamSource(micStream);
 
-    processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+    await audioContext.audioWorklet.addModule('/static/js/audio-processor.js');
+    processorNode = new AudioWorkletNode(audioContext, 'pcm16-processor');
     source.connect(processorNode);
-    processorNode.connect(audioContext.destination);
 
-    processorNode.onaudioprocess = (e) => {
+    processorNode.port.onmessage = (e) => {
       if (!isStreaming || socket.readyState !== WebSocket.OPEN) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const pcm16 = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const s = Math.max(-1, Math.min(1, input[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      }
-      socket.send(pcm16.buffer);
+      socket.send(e.data);
     };
 
     isStreaming = true;
@@ -264,26 +258,83 @@ async function startMicCapture() {
   }
 }
 
+function parseWavFile(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const tag = (o) => String.fromCharCode(view.getUint8(o), view.getUint8(o+1), view.getUint8(o+2), view.getUint8(o+3));
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
+
+  let fmtOff = -1, dataOff = -1, dataSize = 0, pos = 12;
+  while (pos < view.byteLength - 8) {
+    const id = tag(pos);
+    const sz = view.getUint32(pos + 4, true);
+    if (id === 'fmt ') fmtOff = pos + 8;
+    if (id === 'data') { dataOff = pos + 8; dataSize = sz; break; }
+    pos += 8 + sz + (sz % 2);
+  }
+  if (fmtOff < 0 || dataOff < 0) return null;
+  return {
+    audioFormat:   view.getUint16(fmtOff, true),
+    numChannels:   view.getUint16(fmtOff + 2, true),
+    sampleRate:    view.getUint32(fmtOff + 4, true),
+    bitsPerSample: view.getUint16(fmtOff + 14, true),
+    dataOff, dataSize
+  };
+}
+
+function wavPcmToFloat32Mono(arrayBuffer, info) {
+  if (info.bitsPerSample !== 16 || info.audioFormat !== 1) return null;
+  const samples = new Int16Array(arrayBuffer, info.dataOff, info.dataSize / 2);
+  const ch = info.numChannels;
+  const n = Math.floor(samples.length / ch);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = samples[i * ch] / 32768.0;
+  return out;
+}
+
 async function startFileStreaming(file) {
   isStreaming = true;
   document.getElementById("btnStart").disabled = true;
   document.getElementById("btnStop").disabled = false;
 
   const arrayBuffer = await file.arrayBuffer();
-  const tempAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const decodedBuffer = await tempAudioCtx.decodeAudioData(arrayBuffer);
+  let floatData;
+  let srcRate = 16000;
 
-  // Resample sang 16kHz
-  const offlineCtx = new OfflineAudioContext(1, Math.ceil(decodedBuffer.duration * 16000), 16000);
-  const offlineSource = offlineCtx.createBufferSource();
-  offlineSource.buffer = decodedBuffer;
-  offlineSource.connect(offlineCtx.destination);
-  offlineSource.start();
-  const resampledBuffer = await offlineCtx.startRendering();
+  // Parse WAV trực tiếp → tránh double-resampling qua AudioContext (48kHz → 16kHz)
+  const wav = parseWavFile(arrayBuffer);
+  if (wav && wav.audioFormat === 1 && wav.bitsPerSample === 16) {
+    floatData = wavPcmToFloat32Mono(arrayBuffer, wav);
+    srcRate = wav.sampleRate;
+    console.log('[Audio] WAV direct read — sr:', srcRate, 'samples:', floatData.length);
+  }
 
-  const floatData = resampledBuffer.getChannelData(0);
+  if (!floatData) {
+    // Fallback: non-WAV hoặc WAV không phải PCM16 → dùng browser decode
+    const tempCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await tempCtx.decodeAudioData(arrayBuffer);
+    srcRate = decoded.sampleRate;
+    floatData = decoded.numberOfChannels > 1
+      ? decoded.getChannelData(0)
+      : decoded.getChannelData(0);
+    console.log('[Audio] Browser decode fallback — sr:', srcRate, 'samples:', floatData.length);
+    tempCtx.close();
+  }
+
+  // Resample sang 16kHz chỉ khi cần (1 lần duy nhất, từ đúng sample rate gốc)
+  if (srcRate !== 16000) {
+    const srcBuf = new AudioBuffer({ length: floatData.length, sampleRate: srcRate, numberOfChannels: 1 });
+    srcBuf.copyToChannel(floatData, 0);
+    const offCtx = new OfflineAudioContext(1, Math.ceil(floatData.length * 16000 / srcRate), 16000);
+    const src = offCtx.createBufferSource();
+    src.buffer = srcBuf;
+    src.connect(offCtx.destination);
+    src.start();
+    const resampled = await offCtx.startRendering();
+    floatData = resampled.getChannelData(0);
+    console.log('[Audio] Resampled', srcRate, '→ 16000, samples:', floatData.length);
+  }
+
   const chunkSamples = 3840; // 240ms @ 16kHz
-
   let offset = 0;
   fileStreamInterval = setInterval(() => {
     if (!isStreaming || socket.readyState !== WebSocket.OPEN) {
@@ -295,7 +346,6 @@ async function startFileStreaming(file) {
     if (offset >= floatData.length) {
       clearInterval(fileStreamInterval);
       fileStreamInterval = null;
-      // Chờ 350ms để server kịp nhận và xử lý trọn vẹn chunk cuối trước khi xuất RTTM
       setTimeout(() => {
         if (isStreaming) stopStreaming();
       }, 350);
@@ -337,7 +387,7 @@ function stopStreaming() {
   document.getElementById("btnStop").disabled = true;
 
   // Trả lại trạng thái các loa về Im lặng
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     const badge = document.getElementById(`spkBadge_${i}`);
     if (badge) badge.classList.remove("active");
     const statusEl = document.getElementById(`spkStatus_${i}`);
@@ -513,7 +563,7 @@ async function resetAll() {
   document.getElementById("chunkCountLabel").innerText = "0 chunks";
   document.getElementById("valLatency").innerText = "-- ms";
   document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     const badge = document.getElementById(`spkBadge_${i}`);
     if (badge) badge.classList.remove("active");
     const statusEl = document.getElementById(`spkStatus_${i}`);
