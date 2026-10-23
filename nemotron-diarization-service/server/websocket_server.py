@@ -76,8 +76,8 @@ DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHUNK_DURATION = 0.24       # 240ms bước nhảy (3 encoder frames)
 DEFAULT_LOOKAHEAD_DURATION = 0.08   # 80ms nhìn trước (1 encoder frame, tổng SLA = 320ms)
 DEFAULT_STREAMING_MODE = "ultra_low_latency"  # (chunk 3, right context 1) — đúng cấu hình fine-tune
-DEFAULT_THRESHOLD = 0.45            # Ngưỡng kích hoạt tiếng nói tối ưu
-DEFAULT_MIN_SPEECH_ON = 0.05        # Lọc nhiễu < 50ms
+DEFAULT_THRESHOLD = 0.65            # Ngưỡng kích hoạt tiếng nói tối ưu
+DEFAULT_MIN_SPEECH_ON = 0.20        # Lọc nhiễu < 50ms
 DEFAULT_MIN_GAP_OFF = 0.15          # Nối khoảng ngắt < 150ms
 
 DIARIZATION_API_KEY = os.environ.get("DIARIZATION_API_KEY", "")
