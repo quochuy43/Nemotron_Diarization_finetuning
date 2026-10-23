@@ -48,8 +48,11 @@ except ImportError:
 
 def events_to_rttm(events: List[Dict[str, Any]], file_id: str) -> str:
     """
-    Gom các diarization_event 240ms thành các đoạn RTTM liên tục.
-    Merge các chunk liền kề nếu cùng speaker (tolerance 10ms gap).
+    Fallback thô: gom các diarization_event 240ms thành đoạn RTTM liên tục.
+
+    CHỈ dùng khi server không trả về `final_rttm`. Hàm này quyết định ở độ phân
+    giải 240ms và không áp dụng min_duration_on / min_duration_off, nên kém chính
+    xác hơn RTTM do server dựng từ xác suất frame 10ms.
     """
     # Tạo danh sách (start, end, speaker_id) từ mỗi event
     raw_segments: List[tuple] = []
@@ -169,10 +172,14 @@ async def stream_one_file(
     chunk_duration_sec: float = 0.24,
     simulate_realtime: bool = True,
     api_key: Optional[str] = None,
+    file_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Stream 1 file qua WebSocket, thu thập tất cả diarization_event.
-    Trả về dict chứa events, latencies, timing.
+    Stream 1 file qua WebSocket, thu thập diarization_event và RTTM cuối phiên.
+
+    Sau khi gửi hết audio, client gửi {"action": "finalize"} để server xử nốt
+    phần dư và dựng RTTM của cả phiên từ xác suất frame 10ms (đúng bộ lọc
+    threshold/min_on/min_off của pipeline đánh giá lúc train).
     """
     data, sr = sf.read(str(audio_path), dtype='float32')
     if data.ndim > 1:
@@ -194,8 +201,10 @@ async def stream_one_file(
 
     events: List[Dict[str, Any]] = []
     latencies: List[float] = []
+    final_msg: Dict[str, Any] = {}
+    done = asyncio.Event()
 
-    async with websockets.connect(url) as ws:
+    async with websockets.connect(url, max_size=16 * 1024 * 1024) as ws:
         welcome = await ws.recv()
 
         async def receiver():
@@ -206,8 +215,14 @@ async def stream_one_file(
                     if ev.get("type") == "diarization_event":
                         events.append(ev)
                         latencies.append(ev["latency_ms"])
+                    elif ev.get("type") == "final_rttm":
+                        final_msg.update(ev)
+                        done.set()
+                    elif ev.get("type") == "error":
+                        print(f"  [!] Server error: {ev.get('message')}")
+                        done.set()
             except websockets.exceptions.ConnectionClosed:
-                pass
+                done.set()
 
         recv_task = asyncio.create_task(receiver())
 
@@ -221,19 +236,17 @@ async def stream_one_file(
             await ws.send(chunk_int16.tobytes())
 
             if simulate_realtime:
-                elapsed = time.time() - (t0 + i * chunk_duration_sec)
-                sleep_dur = max(0.0, chunk_duration_sec - elapsed + i * chunk_duration_sec - (time.time() - t0))
+                target = t0 + (i + 1) * chunk_duration_sec
+                sleep_dur = target - time.time()
                 if sleep_dur > 0:
                     await asyncio.sleep(sleep_dur)
 
-        # Chờ server xử lý nốt — fast mode cần chờ lâu hơn vì server
-        # vẫn đang inference các chunks đã nhận trong buffer
-        if simulate_realtime:
-            wait_sec = 2.0
-        else:
-            estimated_infer_sec = total_chunks * 0.06
-            wait_sec = min(estimated_infer_sec + 2.0, audio_duration + 5.0)
-        await asyncio.sleep(wait_sec)
+        # Yêu cầu server xử nốt phần dư và trả RTTM cả phiên
+        await ws.send(json.dumps({"action": "finalize", "uri": file_id or audio_path.stem}))
+        try:
+            await asyncio.wait_for(done.wait(), timeout=max(60.0, audio_duration))
+        except asyncio.TimeoutError:
+            print("  [!] Timeout chờ final_rttm từ server")
         recv_task.cancel()
 
     wall_time = time.time() - t0
@@ -241,6 +254,8 @@ async def stream_one_file(
     return {
         "events": events,
         "latencies": latencies,
+        "final_rttm": final_msg.get("rttm", ""),
+        "final_duration_sec": final_msg.get("duration_sec"),
         "audio_duration_sec": round(audio_duration, 2),
         "wall_time_sec": round(wall_time, 2),
         "total_chunks_sent": total_chunks,
@@ -279,6 +294,27 @@ async def run_batch(args):
     all_latencies: List[float] = []
     summary_rows: List[Dict[str, Any]] = []
 
+    # Bộ tích lũy GLOBAL (trọng số theo thời lượng + UEM) — đúng cách mà
+    # scripts/02_baseline_eval/evaluate_metrics.py dùng khi chấm lúc train.
+    # Trung bình cộng DER từng file (cách cũ ở dưới) KHÔNG so sánh được với
+    # các con số trong report.md, nên ở đây báo cáo song song cả hai.
+    from pyannote.core import Annotation, Segment, Timeline
+    from pyannote.metrics.diarization import DiarizationErrorRate, JaccardErrorRate
+
+    global_der_c0 = DiarizationErrorRate(collar=0.0, skip_overlap=False)
+    global_der_c025 = DiarizationErrorRate(collar=0.25, skip_overlap=False)
+    global_jer = JaccardErrorRate(collar=0.0, skip_overlap=False)
+
+    def _annot(text: str, uri: str) -> Annotation:
+        ann = Annotation(uri=uri)
+        for line in text.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 8 and parts[0] == "SPEAKER":
+                s, d = float(parts[3]), float(parts[4])
+                if d > 0.001:
+                    ann[Segment(s, s + d)] = parts[7]
+        return ann
+
     for idx, audio_path in enumerate(audio_files, 1):
         file_id = audio_path.stem
         rttm_path = rttm_dir / f"{file_id}.rttm"
@@ -294,6 +330,7 @@ async def run_batch(args):
             server_url=args.server,
             simulate_realtime=not args.fast,
             api_key=args.key,
+            file_id=file_id,
         )
         stream_elapsed = time.time() - t_start
 
@@ -311,11 +348,16 @@ async def run_batch(args):
                   f"p50: {np.percentile(latencies, 50):.1f}ms | "
                   f"p99: {np.percentile(latencies, 99):.1f}ms")
 
-        # 2. Build predicted RTTM
-        hyp_rttm = events_to_rttm(events, file_id)
+        # 2. Lấy RTTM do server dựng từ xác suất frame 10ms (ưu tiên),
+        #    chỉ fallback về gộp event 240ms nếu server không trả về.
+        hyp_rttm = result.get("final_rttm") or ""
+        rttm_source = "server final_rttm (frame 10ms + min_on/min_off)"
+        if not hyp_rttm.strip():
+            hyp_rttm = events_to_rttm(events, file_id)
+            rttm_source = "fallback: gộp event 240ms"
         pred_path = output_dir / f"{file_id}.pred.rttm"
         pred_path.write_text(hyp_rttm, encoding="utf-8")
-        print(f"  Predicted RTTM saved: {pred_path}")
+        print(f"  Predicted RTTM [{rttm_source}] saved: {pred_path}")
 
         # 3. Compute metrics
         if not rttm_path.exists():
@@ -342,6 +384,13 @@ async def run_batch(args):
 
         all_metrics.append(metrics)
         summary_rows.append({"file": file_id, **metrics})
+
+        # Tích lũy GLOBAL với UEM = [0, audio_duration] của chính file này
+        _ref, _hyp = _annot(ref_rttm, file_id), _annot(hyp_rttm, file_id)
+        _uem = Timeline([Segment(0.0, result["audio_duration_sec"])])
+        global_der_c0(_ref, _hyp, uem=_uem)
+        global_der_c025(_ref, _hyp, uem=_uem)
+        global_jer(_ref, _hyp, uem=_uem)
 
         print(f"  DER(c=0): {metrics['der_collar0']:.2f}%  |  "
               f"DER(c=0.25): {metrics['der_collar025']:.2f}%  |  "
@@ -376,17 +425,43 @@ async def run_batch(args):
     n = len(all_metrics)
     speaker_match = sum(1 for m in all_metrics if m.get("speaker_count_diff", 1) == 0)
 
+    def _components(metric) -> Dict[str, float]:
+        acc = metric.accumulated_
+        tot = max(acc.get("total", 0.0), 1e-6)
+        return {
+            "der": round(abs(metric) * 100, 2),
+            "miss": round(acc.get("missed detection", 0.0) / tot * 100, 2),
+            "fa": round(acc.get("false alarm", 0.0) / tot * 100, 2),
+            "conf": round(acc.get("confusion", 0.0) / tot * 100, 2),
+            "total_speech_sec": round(tot, 2),
+        }
+
+    g_c0 = _components(global_der_c0)
+    g_c025 = _components(global_der_c025)
+    g_jer = round(abs(global_jer) * 100, 2)
+
     print(f"\n  Files evaluated:      {n}/{len(audio_files)}")
     print(f"  Speaker count match:  {speaker_match}/{n}")
-    print()
-    print(f"  {'Metric':<22} {'Average':>10}")
-    print(f"  {'─' * 34}")
-    print(f"  {'DER (collar=0)':<22} {avg['der_collar0']:>9.2f}%")
-    print(f"  {'DER (collar=0.25)':<22} {avg['der_collar025']:>9.2f}%")
-    print(f"  {'Miss Rate':<22} {avg['miss_rate_c0']:>9.2f}%")
-    print(f"  {'False Alarm':<22} {avg['false_alarm_c0']:>9.2f}%")
-    print(f"  {'Confusion':<22} {avg['confusion_c0']:>9.2f}%")
-    print(f"  {'JER':<22} {avg['jer']:>9.2f}%")
+
+    print("\n  [A] GLOBAL — trọng số theo thời lượng + UEM")
+    print("      (cùng cách chấm với scripts/02_baseline_eval/evaluate_metrics.py,")
+    print("       đây là con số so sánh được trực tiếp với report.md)")
+    print(f"      {'DER (collar=0)':<22} {g_c0['der']:>9.2f}%   "
+          f"[miss {g_c0['miss']:.2f} / fa {g_c0['fa']:.2f} / conf {g_c0['conf']:.2f}]")
+    print(f"      {'DER (collar=0.25)':<22} {g_c025['der']:>9.2f}%   "
+          f"[miss {g_c025['miss']:.2f} / fa {g_c025['fa']:.2f} / conf {g_c025['conf']:.2f}]")
+    print(f"      {'JER':<22} {g_jer:>9.2f}%")
+    print(f"      {'Tổng thời lượng thoại':<22} {g_c0['total_speech_sec']:>9.2f}s")
+
+    print("\n  [B] TRUNG BÌNH CỘNG TỪNG FILE (không trọng số, không UEM)")
+    print("      (cách tổng hợp cũ của script này — giữ lại để đối chiếu các lần chạy trước;")
+    print("       KHÔNG so sánh trực tiếp được với report.md)")
+    print(f"      {'DER (collar=0)':<22} {avg['der_collar0']:>9.2f}%")
+    print(f"      {'DER (collar=0.25)':<22} {avg['der_collar025']:>9.2f}%")
+    print(f"      {'Miss Rate':<22} {avg['miss_rate_c0']:>9.2f}%")
+    print(f"      {'False Alarm':<22} {avg['false_alarm_c0']:>9.2f}%")
+    print(f"      {'Confusion':<22} {avg['confusion_c0']:>9.2f}%")
+    print(f"      {'JER':<22} {avg['jer']:>9.2f}%")
 
     if all_latencies:
         print(f"\n  Latency (all chunks):")
@@ -415,6 +490,19 @@ async def run_batch(args):
     report = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "num_files": n,
+        "global_metrics_duration_weighted": {
+            "der_collar0": g_c0["der"],
+            "miss_rate_c0": g_c0["miss"],
+            "false_alarm_c0": g_c0["fa"],
+            "confusion_c0": g_c0["conf"],
+            "der_collar025": g_c025["der"],
+            "miss_rate_c025": g_c025["miss"],
+            "false_alarm_c025": g_c025["fa"],
+            "confusion_c025": g_c025["conf"],
+            "jer": g_jer,
+            "total_speech_sec": g_c0["total_speech_sec"],
+            "note": "Trọng số theo thời lượng + UEM — so sánh được với report.md",
+        },
         "average_metrics": avg,
         "speaker_count_match": f"{speaker_match}/{n}",
         "latency_summary": {

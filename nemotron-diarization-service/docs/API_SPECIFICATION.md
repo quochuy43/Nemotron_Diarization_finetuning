@@ -6,7 +6,7 @@
 ### 1. TỔNG QUAN HỆ THỐNG
 Dịch vụ cung cấp khả năng phát hiện và phân đoạn người nói theo thời gian thực (Real-Time Speaker Diarization) đạt chuẩn SLA **0.32s** với độ trễ xử lý GPU trung bình chỉ **~26ms**. 
 
-* **Kiến trúc**: FastAPI ASGI + WebSocket Full-Duplex + Ring Buffer 15s.
+* **Kiến trúc**: FastAPI ASGI + WebSocket Full-Duplex + Native Speaker Cache (`ultra_low_latency`: chunk 3 frames + right context 1 frame, spkcache/FIFO 264 frames).
 * **Giao thức âm thanh**: PCM 16-bit, Sampling Rate 16,000 Hz, Kênh Mono.
 * **Chu kỳ gửi gói đề xuất**: 240ms (tương đương 3,840 mẫu = 7,680 bytes).
 * **Số người nói hỗ trợ tối đa**: 8 người nói đồng thời / phiên.
@@ -34,7 +34,7 @@ Client có thể gửi 2 loại Frame:
 ##### A. Binary Frame (Dữ liệu âm thanh)
 * Định dạng: Mảng bytes thô (Raw bytes) chứa âm thanh **PCM 16-bit Little-Endian, 16kHz, Mono**.
 * Dung lượng chuẩn mỗi gói: 240ms = 3,840 samples = **7,680 bytes**.
-* *Lưu ý*: Server tự động tích lũy vào Ring Buffer, nên client có thể gửi gói nhỏ hơn (ví dụ 10ms - 100ms) nếu cần.
+* *Lưu ý*: Server tự động tích lũy audio, nên client có thể gửi gói nhỏ hơn (ví dụ 10ms - 100ms) nếu cần.
 
 ##### B. Text Frame (Gói điều khiển JSON)
 * **Khởi tạo lại phiên làm việc (Reset buffer về 0.0s)**:
@@ -43,13 +43,35 @@ Client có thể gửi 2 loại Frame:
     "action": "reset"
   }
   ```
-  *Tác dụng*: Xóa sạch Ring Buffer và lịch sử xác suất, đưa mốc thời gian chunk tiếp theo bắt đầu chính xác từ `0.00s`.
+  *Tác dụng*: Xóa sạch audio đệm, **speaker cache** và lịch sử xác suất, đưa mốc thời gian chunk tiếp theo bắt đầu chính xác từ `0.00s`.
 * **Kiểm tra kết nối (Heartbeat / Ping)**:
   ```json
   {
     "action": "ping"
   }
   ```
+* **Kết thúc phiên và lấy RTTM đầy đủ**:
+  ```json
+  {
+    "action": "finalize",
+    "uri": "ten_file_hoac_phien"
+  }
+  ```
+  *Tác dụng*: Server xử nốt phần audio dư (chunk cuối, không có look-ahead), rồi dựng RTTM của **cả phiên** từ ma trận xác suất frame 10ms qua đúng bộ lọc hậu xử lý đã tối ưu lúc train (`threshold=0.45`, `min_duration_on=0.05s`, `min_duration_off=0.15s`), và trả về message `final_rttm`.
+
+  Đây là **đầu ra chuẩn** để chấm DER. Việc gộp các `diarization_event` 240ms ở phía client chỉ đạt độ phân giải 240ms và không áp dụng `min_duration_on/off`, nên kém chính xác hơn.
+
+  Bộ lọc này chỉ nhìn lại tối đa 150ms nên vẫn chạy được online với độ trễ đầu ra 150ms — nó **không** dùng thông tin tương lai xa.
+
+##### Tham số query khi mở WebSocket
+| Tham số | Mặc định | Ý nghĩa |
+| :--- | :--- | :--- |
+| `threshold` | `0.45` | Ngưỡng kích hoạt tiếng nói |
+| `min_duration_on` | `0.05` | Bỏ đoạn thoại ngắn hơn 50ms |
+| `min_duration_off` | `0.15` | Nối khoảng lặng ngắn hơn 150ms |
+| `emit_frame_probs` | `false` | Kèm ma trận xác suất frame 10ms (24×8) trong mỗi event |
+| `client_id` | tự sinh | Định danh phiên |
+| `key` | — | API key nếu server bật xác thực |
 
 ---
 

@@ -6,7 +6,9 @@
 ## 🌟 1. Giới Thiệu
 Dịch vụ cung cấp hệ thống phân tách người nói thời gian thực (**Real-Time Speaker Diarization**) xây dựng trên kiến trúc **NVIDIA Nemotron-3 Diarization**, được tinh chỉnh (fine-tuned) và tối ưu hóa đạt độ trễ cực thấp **~26ms** và chỉ số lỗi **DER 11.23%**.
 
-Hệ thống giao tiếp qua **WebSocket 2 chiều** với kiến trúc **Ring Buffer** và thuật toán **Hungarian Matching**, đảm bảo không bị đảo kênh người nói (Zero Permutation Inversion) trong suốt cuộc trò chuyện.
+Hệ thống giao tiếp qua **WebSocket 2 chiều**, dùng trực tiếp **streaming API gốc của Nemotron-3** ở chế độ `ultra_low_latency` (chunk 3 encoder frames = 240ms + right context 1 frame = 80ms → SLA 320ms). Danh tính người nói được giữ ổn định bằng chính **Speaker Cache (264 frames) + FIFO (264 frames)** của model, truyền qua từng chunk — đúng cấu hình đã dùng khi fine-tune.
+
+> **Lưu ý về kiến trúc:** phiên bản trước dùng cửa sổ trượt 2.64s + Hungarian Matching ở tầng ứng dụng để tự ghép kênh. Cách đó tạo một `speaker_cache` mới ở **mỗi** chunk, khiến model mất toàn bộ bộ nhớ người nói và buộc tầng ngoài phải đoán lại hoán vị kênh sau mỗi 240ms — đo được **145–350 lần hoán vị nhầm/file**, đẩy Speaker Confusion lên 17%. Kiến trúc hiện tại bỏ hẳn cả hai.
 
 ---
 

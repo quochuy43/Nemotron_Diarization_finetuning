@@ -395,8 +395,58 @@ function stopStreaming() {
   }
   document.getElementById("activeSpeakerCountLabel").innerText = "0 người";
 
-  // Sinh file RTTM từ các chunks đã lưu
-  generateAndDisplayRttm();
+  // Ưu tiên RTTM do server dựng từ xác suất frame 10ms; chỉ gộp event 240ms
+  // ở client nếu server không phản hồi.
+  requestFinalRttmFromServer();
+}
+
+// Gửi {"action":"finalize"} và chờ server trả về RTTM của cả phiên.
+// Server dựng RTTM từ xác suất frame 10ms qua đúng bộ lọc threshold/min_on/min_off
+// của pipeline đánh giá lúc train — chính xác hơn hẳn cách gộp event 240ms ở client.
+function requestFinalRttmFromServer() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    generateAndDisplayRttm();
+    return;
+  }
+
+  const uri = selectedAudioFile
+    ? selectedAudioFile.name.replace(/\.[^/.]+$/, "")
+    : "live_stream_session";
+
+  let settled = false;
+  const onFinal = (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (e) { return; }
+    if (data.type !== 'final_rttm') return;
+    settled = true;
+    socket.removeEventListener('message', onFinal);
+    displayRttm(data.rttm || "", uri);
+  };
+
+  socket.addEventListener('message', onFinal);
+  socket.send(JSON.stringify({ action: "finalize", uri: uri }));
+
+  // Dự phòng: nếu quá 5s server chưa trả lời thì dựng tạm ở client
+  setTimeout(() => {
+    if (settled) return;
+    socket.removeEventListener('message', onFinal);
+    generateAndDisplayRttm();
+  }, 5000);
+}
+
+function displayRttm(rttmText, uri) {
+  currentHypothesisRttm = (rttmText || "").trim();
+  document.getElementById("rttmOutputBox").innerText =
+    currentHypothesisRttm || "Không có đoạn phát biểu nào được ghi nhận.";
+  document.getElementById("resultsSection").style.display = "flex";
+
+  const gtText = document.getElementById("gtRttmText").value.trim();
+  if (gtText && currentHypothesisRttm) {
+    calculateMetricsNow();
+  } else {
+    document.getElementById("noGtNotice").style.display = "flex";
+    document.getElementById("metricsScorecard").style.display = "none";
+  }
 }
 
 function generateAndDisplayRttm() {
@@ -453,18 +503,7 @@ function generateAndDisplayRttm() {
   // Sắp xếp theo mốc thời gian bắt đầu
   rttmLines.sort((a, b) => parseFloat(a.split(/\s+/)[3]) - parseFloat(b.split(/\s+/)[3]));
 
-  currentHypothesisRttm = rttmLines.join("\n");
-  document.getElementById("rttmOutputBox").innerText = currentHypothesisRttm || "Không có đoạn phát biểu nào được ghi nhận.";
-  document.getElementById("resultsSection").style.display = "flex";
-
-  // Nếu có Ground Truth RTTM, tự động tính toán metrics luôn
-  const gtText = document.getElementById("gtRttmText").value.trim();
-  if (gtText && currentHypothesisRttm) {
-    calculateMetricsNow();
-  } else {
-    document.getElementById("noGtNotice").style.display = "flex";
-    document.getElementById("metricsScorecard").style.display = "none";
-  }
+  displayRttm(rttmLines.join("\n"), uri);
 }
 
 // 7. Gọi API Chấm Điểm Metrics NIST với Ground Truth

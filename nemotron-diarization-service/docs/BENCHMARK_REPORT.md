@@ -14,7 +14,7 @@
 | **Tham số đóng băng (Frozen)** | 50,413,568 (50.8%) | Các tầng 0 $\to$ 15 giữ lại biểu diễn âm học gốc |
 | **Tham số huấn luyện (Trainable)**| 48,812,936 (49.2%) | Các tầng 16 $\to$ 30 & Classifier Head thích nghi dữ liệu |
 | **Dung sai độ trễ (SLA)** | **0.32s (320ms)** | Gồm 0.24s chunk hiện tại + 0.08s lookahead |
-| **Kỹ thuật khóa kênh** | **Hungarian Matching (Linear Sum Assignment)** | Khóa kênh cố định, chống đảo ID người nói |
+| **Kỹ thuật khóa kênh** | **Native Speaker Cache của model** (264 frames) + FIFO 264 frames, truyền qua từng chunk | Giữ danh tính người nói xuyên suốt phiên; thay thế hoàn toàn Hungarian Matching ở tầng ứng dụng |
 
 ---
 

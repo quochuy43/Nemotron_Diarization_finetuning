@@ -10,6 +10,7 @@ data/raw/
 data/javis
 *.zip
 *.tar.gz
+nemotron-diarization-service/9_files_v4/
 
 # 2. Toàn bộ thư mục lưu trữ thực nghiệm, checkpoints và ma trận xác suất
 experiments/
@@ -19,6 +20,9 @@ experiments/baselines
 *.nemo
 *.npz
 final_model_production_profile*.json
+nemotron-diarization-service/eval_output/
+nemotron-diarization-service/eval_output_1/
+nemotron-diarization-service/eval_output_2/
 
 # 3. File rác Python, IDE và hệ điều hành
 __pycache__/

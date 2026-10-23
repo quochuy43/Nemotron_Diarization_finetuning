@@ -37,7 +37,6 @@ print("[*] Đang khởi động WebSocket Streaming Server (vui lòng chờ tron
 
 import torch
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -68,10 +67,9 @@ def resolve_file_path(path_str: str) -> str:
 # ===============================================================================
 
 DEFAULT_SAMPLE_RATE = 16000
-DEFAULT_CHUNK_DURATION = 0.24       # 240ms bước nhảy
-DEFAULT_LOOKAHEAD_DURATION = 0.08   # 80ms nhìn trước (Tổng SLA = 320ms)
-DEFAULT_HISTORY_DURATION = 2.64     # 2.64s FIFO context buffer (264 frames)
-DEFAULT_RING_BUFFER_SEC = 20.0      # Giữ 20s âm thanh gần nhất trong RAM
+DEFAULT_CHUNK_DURATION = 0.24       # 240ms bước nhảy (3 encoder frames)
+DEFAULT_LOOKAHEAD_DURATION = 0.08   # 80ms nhìn trước (1 encoder frame, tổng SLA = 320ms)
+DEFAULT_STREAMING_MODE = "ultra_low_latency"  # (chunk 3, right context 1) — đúng cấu hình fine-tune
 DEFAULT_THRESHOLD = 0.45            # Ngưỡng kích hoạt tiếng nói tối ưu
 DEFAULT_MIN_SPEECH_ON = 0.05        # Lọc nhiễu < 50ms
 DEFAULT_MIN_GAP_OFF = 0.15          # Nối khoảng ngắt < 150ms
@@ -82,212 +80,219 @@ MAX_WS_FRAME_BYTES = 1024 * 1024   # 1MB max per WebSocket binary frame
 
 
 # ===============================================================================
-# 2. AUDIO RING BUFFER: BỘ ĐỆM XOAY VÒNG CHO TỪNG PHIÊN (PER-SESSION BUFFER)
+# 2. HẬU XỬ LÝ TÍN HIỆU (ĐỒNG BỘ 1:1 VỚI PIPELINE ĐÁNH GIÁ LÚC TRAIN)
 # ===============================================================================
 
-class AudioRingBuffer:
+def binarize_and_filter_probs(
+    probs: np.ndarray,
+    frame_step: float = 0.01,
+    threshold: float = DEFAULT_THRESHOLD,
+    min_duration_on: float = DEFAULT_MIN_SPEECH_ON,
+    min_duration_off: float = DEFAULT_MIN_GAP_OFF
+) -> List[Tuple[float, float, str]]:
     """
-    Bộ đệm âm thanh xoay vòng (Circular Ring Buffer) an toàn cho từng phiên kết nối:
-    - Nhận dữ liệu âm thanh dạng bytes (PCM 16-bit mono 16kHz) hoặc float32.
-    - Lưu trữ lịch sử tối đa max_seconds (mặc định 20 giây).
-    - Cung cấp cửa sổ trượt: [History (tối đa 2.64s) | Chunk hiện tại (0.24s) | Lookahead (0.08s)].
+    Chuyển ma trận xác suất (T, 8) thành danh sách đoạn thoại (start, end, speaker_id).
+
+    Bản sao chính xác của `scripts/02_baseline_eval/tune_postprocessing.py`
+    để kết quả của service trùng khớp từng frame với pipeline đánh giá lúc train:
+      1. Binarize ở cấp frame 10ms: probs >= threshold
+      2. Gap bridging: nối các khoảng lặng ngắn hơn min_duration_off
+      3. Short speech filtering: bỏ các đoạn ngắn hơn min_duration_on
+
+    Lưu ý về tính "streaming": bước 2 chỉ nhìn lại tối đa `min_duration_off` (150ms)
+    và bước 3 tối đa `min_duration_on` (50ms), nên bộ lọc này hoàn toàn chạy được
+    online với độ trễ đầu ra 150ms. Nó KHÔNG dùng thông tin tương lai xa.
     """
-    def __init__(self, sample_rate: int = DEFAULT_SAMPLE_RATE, max_seconds: float = DEFAULT_RING_BUFFER_SEC):
-        self.sample_rate = sample_rate
-        self.capacity = int(round(sample_rate * max_seconds))
-        self.buffer = np.zeros(self.capacity, dtype=np.float32)
-        self.write_idx = 0
-        self.total_samples_received = 0
-        self.last_emitted_sample_idx = 0
+    num_frames, max_speakers = probs.shape
+    segments: List[Tuple[float, float, str]] = []
 
-    def append_pcm16_bytes(self, pcm_bytes: bytes) -> int:
-        """Nhận mảng byte PCM 16-bit little endian và chuyển đổi sang float32 [-1.0, 1.0]."""
-        if not pcm_bytes:
-            return 0
-        # Chuyển bytes thành int16
-        audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
-        audio_float = (audio_int16.astype(np.float32) / 32768.0).copy()
-        return self.append_float32(audio_float)
+    for spk_idx in range(max_speakers):
+        active = (probs[:, spk_idx] >= threshold)
+        if not np.any(active):
+            continue
 
-    def append_float32(self, samples: np.ndarray) -> int:
-        """Nạp các mẫu float32 vào ring buffer."""
-        n = len(samples)
-        if n == 0:
-            return 0
+        diff = np.diff(active.astype(np.int8))
+        starts = np.where(diff == 1)[0] + 1
+        ends = np.where(diff == -1)[0] + 1
+        if active[0]:
+            starts = np.r_[0, starts]
+        if active[-1]:
+            ends = np.r_[ends, num_frames]
 
-        # Nếu lượng samples mới vượt quá capacity, chỉ lấy phần đuôi
-        if n >= self.capacity:
-            self.buffer[:] = samples[-self.capacity:]
-            self.write_idx = 0
-        else:
-            end_idx = (self.write_idx + n) % self.capacity
-            if self.write_idx + n <= self.capacity:
-                self.buffer[self.write_idx : self.write_idx + n] = samples
+        spk_segments = []
+        for s, e in zip(starts, ends):
+            start_sec, end_sec = s * frame_step, e * frame_step
+            if end_sec > start_sec:
+                spk_segments.append([start_sec, end_sec])
+        if not spk_segments:
+            continue
+
+        merged = [spk_segments[0]]
+        for cur in spk_segments[1:]:
+            if cur[0] - merged[-1][1] < min_duration_off:
+                merged[-1][1] = cur[1]
             else:
-                part1 = self.capacity - self.write_idx
-                self.buffer[self.write_idx :] = samples[:part1]
-                self.buffer[: end_idx] = samples[part1:]
-            self.write_idx = end_idx
+                merged.append(cur)
 
-        self.total_samples_received += n
-        return n
+        for seg in merged:
+            if seg[1] - seg[0] >= min_duration_on:
+                segments.append((seg[0], seg[1], f"SPEAKER_{spk_idx:02d}"))
 
-    def get_linear_history(self, num_samples: int) -> np.ndarray:
-        """Lấy tuyến tính N samples âm thanh gần nhất từ ring buffer."""
-        available = min(self.total_samples_received, self.capacity)
-        num_samples = min(num_samples, available)
-        if num_samples <= 0:
-            return np.zeros(0, dtype=np.float32)
+    return segments
 
-        start_pos = (self.write_idx - num_samples) % self.capacity
-        if start_pos + num_samples <= self.capacity:
-            return self.buffer[start_pos : start_pos + num_samples].copy()
-        else:
-            part1 = self.capacity - start_pos
-            part2 = num_samples - part1
-            return np.concatenate([self.buffer[start_pos:], self.buffer[:part2]]).copy()
 
-    def has_enough_for_chunk(self, chunk_samples: int, lookahead_samples: int) -> bool:
-        """Kiểm tra xem đã có đủ mẫu để suy luận chunk tiếp theo chưa."""
-        samples_since_last = self.total_samples_received - self.last_emitted_sample_idx
-        # Cần ít nhất 1 chunk mới + phần lookahead
-        return samples_since_last >= (chunk_samples + lookahead_samples)
+def segments_to_rttm_text(segments: List[Tuple[float, float, str]], uri: str) -> str:
+    """Ghi danh sách segment ra chuỗi RTTM chuẩn NIST 10 cột."""
+    lines = []
+    for start, end, spk in sorted(segments, key=lambda x: x[0]):
+        duration = max(0.01, end - start)
+        lines.append(f"SPEAKER {uri} 1 {start:.3f} {duration:.3f} <NA> <NA> {spk} <NA> <NA>")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 # ===============================================================================
-# 3. STREAMING DIARIZATION WORKER (QUẢN LÝ SUY LUẬN & KHÓA KÊNH HUNGARIAN)
+# 3. STREAMING DIARIZATION SESSION (NATIVE SPEAKER CACHE — KHÔNG HUNGARIAN NGOÀI)
 # ===============================================================================
 
 class DiarizationSession:
     """
-    Quản lý trạng thái phân đoạn người nói của 1 phiên làm việc:
-    - Giữ Ring Buffer âm thanh.
-    - Duy trì ma trận xác suất lịch sử (full_probs_so_far) để thực hiện Hungarian Matching.
-    - Đếm số lượng chunks đã emit và tính thời gian biểu (timestamps).
+    Trạng thái phân đoạn người nói của 1 phiên, dùng ĐÚNG streaming API gốc của
+    Nemotron-3-Diarization ở chế độ `ultra_low_latency` (chunk 3 frames = 240ms,
+    right context 1 frame = 80ms → SLA 320ms):
+
+      - Mỗi bước, processor được gọi với `is_streaming=True` và model nhận lại
+        `speaker_cache` của bước trước. Speaker cache (264 frames) + FIFO (264 frames)
+        do chính model duy trì, nên danh tính 8 kênh được giữ nguyên xuyên suốt phiên.
+      - KHÔNG còn cửa sổ trượt 2.64s, KHÔNG còn Hungarian matching bên ngoài:
+        cả hai chỉ là cách vá lỗi cho việc speaker cache bị tạo mới ở mỗi chunk.
+      - Giữ lại toàn bộ xác suất frame 10ms của phiên để xuất RTTM cuối phiên
+        bằng đúng bộ lọc hậu xử lý của pipeline đánh giá lúc train.
     """
+
     def __init__(
         self,
         session_id: str,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
-        chunk_duration: float = DEFAULT_CHUNK_DURATION,
-        lookahead_duration: float = DEFAULT_LOOKAHEAD_DURATION,
-        history_duration: float = DEFAULT_HISTORY_DURATION,
-        threshold: float = DEFAULT_THRESHOLD
+        threshold: float = DEFAULT_THRESHOLD,
+        min_duration_on: float = DEFAULT_MIN_SPEECH_ON,
+        min_duration_off: float = DEFAULT_MIN_GAP_OFF,
+        emit_frame_probs: bool = False
     ):
         self.session_id = session_id
         self.sample_rate = sample_rate
-        self.chunk_duration = chunk_duration
-        self.lookahead_duration = lookahead_duration
-        self.history_duration = history_duration
         self.threshold = threshold
+        self.min_duration_on = min_duration_on
+        self.min_duration_off = min_duration_off
+        self.emit_frame_probs = emit_frame_probs
 
-        self.chunk_samples = int(round(chunk_duration * sample_rate))         # 3,840 samples (240ms)
-        self.lookahead_samples = int(round(lookahead_duration * sample_rate)) # 1,280 samples (80ms)
-        self.history_samples = int(round(history_duration * sample_rate))     # 42,240 samples (2.64s)
-        self.total_buffer_samples = self.chunk_samples + self.lookahead_samples # 5,120 samples (320ms)
+        manager = ModelManager.get_instance()
+        # Kích thước chunk do chính processor quy định cho chế độ ultra_low_latency
+        self.samples_first_chunk = manager.samples_first_chunk   # 5,160 samples
+        self.samples_per_chunk = manager.samples_per_chunk       # 5,520 samples
+        self.samples_per_step = manager.samples_per_step         # 3,840 samples (240ms)
+        self.frames_per_step = manager.frames_per_step           # 24 frames (10ms/frame)
 
-        self.ring_buffer = AudioRingBuffer(sample_rate=sample_rate)
-        self.full_probs_so_far: Optional[np.ndarray] = None
+        self.reset()
+
+    def reset(self):
+        """Khôi phục trạng thái ban đầu: xóa sạch audio đệm, speaker cache và lịch sử."""
+        self.pending = np.zeros(0, dtype=np.float32)
+        self.speaker_cache = None
+        self.is_first_chunk = True
+        self.finished = False
+        self.frames_emitted = 0
+        self.session_probs: List[np.ndarray] = []
         self.chunk_count = 0
         self.created_at = time.time()
         self.active_speaker_history: List[str] = []
 
-    def reset(self):
-        """Khôi phục trạng thái ban đầu của session: xóa sạch ring buffer và lịch sử xác suất."""
-        self.ring_buffer = AudioRingBuffer(sample_rate=self.sample_rate)
-        self.full_probs_so_far = None
-        self.chunk_count = 0
-        self.active_speaker_history = []
-        self.created_at = time.time()
+    # --- Nạp audio -------------------------------------------------------------
 
-    def get_inference_window(self) -> Tuple[np.ndarray, int, int]:
+    def append_pcm16_bytes(self, pcm_bytes: bytes) -> int:
+        """Nhận PCM 16-bit little endian mono và chuyển sang float32 [-1.0, 1.0]."""
+        if not pcm_bytes:
+            return 0
+        audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+        return self.append_float32(audio_int16.astype(np.float32) / 32768.0)
+
+    def append_float32(self, samples: np.ndarray) -> int:
+        if len(samples) == 0:
+            return 0
+        self.pending = np.concatenate([self.pending, samples.astype(np.float32)])
+        return len(samples)
+
+    # --- Điều phối chunk -------------------------------------------------------
+
+    def _samples_needed(self) -> int:
+        return self.samples_first_chunk if self.is_first_chunk else self.samples_per_chunk
+
+    def has_enough_for_chunk(self) -> bool:
+        """Đã đủ audio cho 1 bước streaming (chunk 240ms + lookahead 80ms) chưa."""
+        return (not self.finished) and len(self.pending) >= self._samples_needed()
+
+    def next_chunk_audio(self, is_last: bool = False) -> np.ndarray:
+        """Lấy đoạn audio cho bước suy luận kế tiếp (chưa tiêu thụ)."""
+        if is_last:
+            return self.pending
+        return self.pending[: self._samples_needed()]
+
+    def consume_step(self):
+        """Tiêu thụ đúng 240ms audio sau khi một bước streaming hoàn tất."""
+        self.pending = self.pending[self.samples_per_step:]
+        self.is_first_chunk = False
+
+    # --- Ghi nhận kết quả 1 bước ----------------------------------------------
+
+    def record_chunk(self, frame_probs: np.ndarray) -> Tuple[float, float, List[Dict[str, Any]]]:
         """
-        Trích xuất cửa sổ trượt: [History | Current Chunk | Lookahead]
-        Trả về: (audio_slice, chunk_offset_samples, actual_chunk_len)
+        Ghi nhận ma trận xác suất frame 10ms của 1 bước và trả về
+        (t_start, t_end, active_speakers) cho sự kiện real-time.
         """
-        # Điểm bắt đầu của chunk cần emit
-        cur_start = self.ring_buffer.last_emitted_sample_idx
-        history_start = max(0, cur_start - self.history_samples)
-        cur_end = cur_start + self.chunk_samples
-        buffer_end = cur_end + self.lookahead_samples
+        n_frames = len(frame_probs)
+        t_start = self.frames_emitted * 0.01
+        t_end = (self.frames_emitted + n_frames) * 0.01
 
-        # Lấy âm thanh từ ring buffer tương ứng khoảng [history_start : buffer_end]
-        samples_needed = buffer_end - history_start
-        audio_slice = self.ring_buffer.get_linear_history(
-            num_samples=(self.ring_buffer.total_samples_received - history_start)
-        )
-        if len(audio_slice) > samples_needed:
-            audio_slice = audio_slice[:samples_needed]
+        self.session_probs.append(frame_probs)
+        self.frames_emitted += n_frames
+        self.chunk_count += 1
 
-        # Đệm zero nếu không đủ 320ms
-        if len(audio_slice) < self.total_buffer_samples:
-            pad = self.total_buffer_samples - len(audio_slice)
-            audio_slice = np.pad(audio_slice, (0, pad), mode="constant")
-
-        chunk_offset_samples = cur_start - history_start
-        return audio_slice, chunk_offset_samples, self.chunk_samples
-
-    def align_and_update_probs(self, raw_probs: np.ndarray, chunk_offset_samples: int) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
-        """
-        Thực hiện Hungarian Matching để khóa kênh cố định và trích xuất phân đoạn hoạt động.
-        """
-        chunk_offset_frames = int(round((chunk_offset_samples / self.sample_rate) * 100))
-        emitted_frames = int(round((self.chunk_samples / self.sample_rate) * 100))
-
-        aligned_probs = raw_probs.copy()
-
-        # 1. Khóa kênh với lịch sử
-        if self.full_probs_so_far is not None and chunk_offset_frames > 0:
-            overlap_len = min(chunk_offset_frames, len(self.full_probs_so_far), len(aligned_probs))
-            if overlap_len > 0:
-                prev_overlap = self.full_probs_so_far[-overlap_len:]
-                curr_overlap = aligned_probs[chunk_offset_frames - overlap_len : chunk_offset_frames]
-
-                cost_matrix = np.zeros((8, 8), dtype=np.float32)
-                for i in range(8):
-                    for j in range(8):
-                        diff = curr_overlap[:, i] - prev_overlap[:, j]
-                        cost_matrix[i, j] = np.mean(diff ** 2) + (0.0 if i == j else 1e-4)
-
-                curr_idx, tracked_idx = linear_sum_assignment(cost_matrix)
-                perm = np.zeros(8, dtype=int)
-                for c, t in zip(curr_idx, tracked_idx):
-                    perm[t] = c
-                aligned_probs = aligned_probs[:, perm]
-
-        # 2. Cắt phần 240ms của chunk hiện tại
-        valid_chunk = aligned_probs[chunk_offset_frames : chunk_offset_frames + emitted_frames]
-        if len(valid_chunk) == 0:
-            valid_chunk = np.zeros((emitted_frames, 8), dtype=np.float32)
-
-        # 3. Cập nhật lịch sử xác suất (giữ tối đa 500 frames ~ 5 giây để tối ưu bộ nhớ)
-        if self.full_probs_so_far is None:
-            self.full_probs_so_far = valid_chunk.copy()
-        else:
-            self.full_probs_so_far = np.concatenate([self.full_probs_so_far, valid_chunk], axis=0)
-            if len(self.full_probs_so_far) > 500:
-                self.full_probs_so_far = self.full_probs_so_far[-500:]
-
-        # 4. Đánh giá người nói tích cực trong 240ms này
-        mean_probs = np.mean(valid_chunk, axis=0)
-        active_speakers = []
-        for spk_idx in range(8):
-            prob = float(mean_probs[spk_idx])
-            if prob >= self.threshold:
+        # Quyết định ở cấp frame rồi mới tổng hợp cho chunk: một tiếng động 40ms
+        # không còn kéo cả khối 240ms thành "đang nói" như cách lấy mean trước đây.
+        active_mask = frame_probs >= self.threshold
+        active_speakers: List[Dict[str, Any]] = []
+        for spk_idx in range(frame_probs.shape[1]):
+            active_ratio = float(np.mean(active_mask[:, spk_idx])) if n_frames else 0.0
+            if active_ratio >= 0.5:
                 spk_name = f"SPEAKER_{spk_idx:02d}"
                 active_speakers.append({
                     "speaker_id": spk_name,
                     "channel_index": spk_idx,
-                    "confidence": round(prob, 4)
+                    "confidence": round(float(np.mean(frame_probs[:, spk_idx])), 4),
+                    "active_frame_ratio": round(active_ratio, 3)
                 })
                 if spk_name not in self.active_speaker_history:
                     self.active_speaker_history.append(spk_name)
 
-        # Cập nhật con trỏ đã xử lý
-        self.ring_buffer.last_emitted_sample_idx += self.chunk_samples
-        self.chunk_count += 1
+        return t_start, t_end, active_speakers
 
-        return valid_chunk, active_speakers
+    # --- Kết thúc phiên --------------------------------------------------------
+
+    def build_final_rttm(self, uri: Optional[str] = None) -> Tuple[str, List[Tuple[float, float, str]]]:
+        """
+        Xuất RTTM cuối phiên từ toàn bộ xác suất frame 10ms, dùng đúng bộ lọc
+        (threshold / min_duration_on / min_duration_off) của pipeline lúc train.
+        """
+        if not self.session_probs:
+            return "", []
+        probs = np.concatenate(self.session_probs, axis=0)
+        segments = binarize_and_filter_probs(
+            probs,
+            frame_step=0.01,
+            threshold=self.threshold,
+            min_duration_on=self.min_duration_on,
+            min_duration_off=self.min_duration_off,
+        )
+        return segments_to_rttm_text(segments, uri or self.session_id), segments
 
 
 # ===============================================================================
@@ -304,10 +309,12 @@ class ModelManager:
         self.processor = None
         self.model_loaded = False
         self.model_path = None
-        self._batch_queue: Optional[asyncio.Queue] = None
-        self._batch_task: Optional[asyncio.Task] = None
-        self._max_batch_size = 32
-        self._batch_timeout_sec = 0.005
+        # Kích thước chunk của chế độ ultra_low_latency, điền khi load_model()
+        self.samples_first_chunk = 0
+        self.samples_per_chunk = 0
+        self.samples_per_step = 0
+        self.frames_per_step = 0
+        self._infer_lock: Optional[asyncio.Lock] = None
 
     @classmethod
     def get_instance(cls):
@@ -344,6 +351,21 @@ class ModelManager:
         self.processor = AutoProcessor.from_pretrained(pretrained_id)
         self.model = AutoModelForAudioFrameClassification.from_pretrained(pretrained_id)
 
+        # BẮT BUỘC: chọn đúng chế độ streaming 0.32s mà model đã được fine-tune.
+        # Mặc định của processor là "low_latency" (9 frames chunk / 4 frames lookahead
+        # = 1040ms), KHÔNG phải cấu hình 0.32s dùng khi train.
+        self.processor.set_streaming_mode("ultra_low_latency")
+        self.samples_first_chunk = self.processor.num_samples_first_audio_chunk
+        self.samples_per_chunk = self.processor.num_samples_per_audio_chunk
+        self.frames_per_step = self.processor.num_mel_frames_per_step
+        self.samples_per_step = self.frames_per_step * self.processor.feature_extractor.hop_length
+        sc = self.model.config.streaming_config
+        print(f"[*] Streaming mode: ultra_low_latency | chunk={self.processor._streaming_chunk_sizes[0]} frames "
+              f"+ lookahead={self.processor._streaming_chunk_sizes[1]} frame "
+              f"= {self.processor.streaming_latency_ms}ms SLA")
+        print(f"[*] Speaker cache={sc.speaker_cache_length} frames | FIFO={sc.fifo_length} frames | "
+              f"update_period={sc.speaker_cache_update_period} | num_speakers={sc.num_speakers}")
+
         if resolved and Path(resolved).exists():
             print(f"[*] Nạp trọng số xuất xưởng SWA: {resolved}")
             payload = torch.load(resolved, map_location="cpu", weights_only=True)
@@ -365,21 +387,34 @@ class ModelManager:
             torch.backends.cudnn.benchmark = False
             print("[*] CUDA deterministic mode: ON (đảm bảo kết quả suy luận nhất quán giữa các lần chạy)")
 
-        # Warm-up GPU 3 chunks để ổn định CUDA kernel
+        # Warm-up GPU bằng đúng đường đi streaming thật (chunk đầu + 2 chunk tiếp)
         print(f"[*] Thiết bị suy luận: {self.device.upper()}")
-        dummy_audio = np.zeros(5120, dtype=np.float32)
-        with torch.inference_mode():
-            for _ in range(3):
-                inp = self.processor(dummy_audio, sampling_rate=DEFAULT_SAMPLE_RATE, return_tensors="pt").to(self.device)
-                _ = self.model(**inp).logits
-            if self.device == "cuda":
-                torch.cuda.synchronize()
-
         self.model_loaded = True
+        probs, cache, _ = self.forward_streaming_chunk(
+            np.zeros(self.samples_first_chunk, dtype=np.float32), None, is_first=True, is_last=False)
+        for _ in range(2):
+            probs, cache, _ = self.forward_streaming_chunk(
+                np.zeros(self.samples_per_chunk, dtype=np.float32), cache, is_first=False, is_last=False)
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        print(f"[*] Warm-up OK: mỗi bước trả về {len(probs)} frames (10ms/frame = 240ms audio)")
+
         print("[+] MODEL STREAMING ĐÃ SẴN SÀNG PHỤC VỤ (WARM-UP HOÀN TẤT)!\n")
 
-    def forward_audio_slice(self, audio_slice: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Thực hiện 1 bước suy luận trên chunk âm thanh."""
+    def forward_streaming_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        speaker_cache: Any,
+        is_first: bool,
+        is_last: bool
+    ) -> Tuple[np.ndarray, Any, float]:
+        """
+        Một bước streaming chuẩn Nemotron-3: nạp chunk audio kèm `speaker_cache`
+        của bước trước, trả về (frame_probs (n,8), speaker_cache mới, latency_ms).
+
+        `speaker_cache` chính là thứ giữ danh tính người nói ổn định xuyên suốt
+        phiên — thay thế hoàn toàn Hungarian matching thủ công trước đây.
+        """
         if not self.model_loaded:
             raise RuntimeError("Model chưa được nạp!")
 
@@ -388,117 +423,50 @@ class ModelManager:
         t0 = time.perf_counter()
 
         with torch.inference_mode():
-            inputs = self.processor(audio_slice, sampling_rate=DEFAULT_SAMPLE_RATE, return_tensors="pt").to(self.device)
-            logits = self.model(**inputs).logits # (1, num_frames, 8)
-            probs = torch.sigmoid(logits)[0].detach().cpu().numpy()
+            inputs = self.processor(
+                audio_chunk,
+                sampling_rate=DEFAULT_SAMPLE_RATE,
+                return_tensors="pt",
+                is_streaming=True,
+                is_first_audio_chunk=is_first,
+                is_last_audio_chunk=is_last,
+            ).to(self.device)
+
+            extra = {}
+            if "num_lookahead_frames" in inputs:
+                extra["num_lookahead_frames"] = int(inputs.pop("num_lookahead_frames"))
+
+            out = self.model(**inputs, speaker_cache=speaker_cache, **extra)
+            probs = torch.sigmoid(out.logits)[0].float().detach().cpu().numpy()
+            new_cache = out.speaker_cache
 
         if self.device == "cuda":
             torch.cuda.synchronize()
         t1 = time.perf_counter()
 
-        latency_ms = (t1 - t0) * 1000.0
-        return probs, latency_ms
+        return probs, new_cache, (t1 - t0) * 1000.0
 
-    # --- Dynamic Batching ---
+    # --- Điều phối suy luận ---
+    #
+    # Dynamic batching (gộp nhiều phiên vào 1 forward) đã được gỡ bỏ: ở chế độ
+    # streaming thật, mỗi phiên mang một `speaker_cache` riêng với nội dung khác
+    # nhau, nên không thể gộp các phiên vào cùng một batch mà không trộn lẫn
+    # trạng thái người nói giữa các cuộc gọi. Thay vào đó, các forward được
+    # tuần tự hoá bằng lock và chạy trong thread pool để không chẹn event loop.
 
-    async def start_batch_worker(self):
-        self._batch_queue = asyncio.Queue()
-        self._batch_task = asyncio.create_task(self._batch_loop())
-        print("[*] Dynamic Batch Worker đã khởi động.")
-
-    async def stop_batch_worker(self):
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-        if self._batch_queue:
-            while not self._batch_queue.empty():
-                try:
-                    _, fut = self._batch_queue.get_nowait()
-                    fut.set_exception(RuntimeError("Server shutting down"))
-                except asyncio.QueueEmpty:
-                    break
-        print("[*] Dynamic Batch Worker đã dừng.")
-
-    async def submit_for_inference(self, audio_slice: np.ndarray) -> Tuple[np.ndarray, float]:
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        await self._batch_queue.put((audio_slice, future))
-        return await future
-
-    async def _batch_loop(self):
-        while True:
-            first_item = await self._batch_queue.get()
-            items = [first_item]
-            deadline = asyncio.get_event_loop().time() + self._batch_timeout_sec
-            while len(items) < self._max_batch_size:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    break
-                try:
-                    item = await asyncio.wait_for(
-                        self._batch_queue.get(), timeout=remaining
-                    )
-                    items.append(item)
-                except asyncio.TimeoutError:
-                    break
-
-            audio_slices = [item[0] for item in items]
-            futures = [item[1] for item in items]
-            try:
-                results = await asyncio.to_thread(self._forward_batch, audio_slices)
-                for fut, result in zip(futures, results):
-                    if not fut.done():
-                        fut.set_result(result)
-            except Exception as exc:
-                for fut in futures:
-                    if not fut.done():
-                        fut.set_exception(exc)
-
-    def _forward_batch(self, audio_slices: List[np.ndarray]) -> List[Tuple[np.ndarray, float]]:
-        if len(audio_slices) == 1:
-            return [self.forward_audio_slice(audio_slices[0])]
-
-        if self.device == "cuda":
-            torch.cuda.synchronize()
-        t0 = time.perf_counter()
-
-        processed = [
-            self.processor(s, sampling_rate=DEFAULT_SAMPLE_RATE, return_tensors="pt")
-            for s in audio_slices
-        ]
-        max_len = max(p["input_values"].shape[-1] for p in processed)
-
-        padded_vals = []
-        mask_vals = []
-        for p in processed:
-            v = p["input_values"][0]
-            cur_len = v.shape[-1]
-            if cur_len < max_len:
-                pad = torch.zeros(max_len - cur_len, dtype=v.dtype)
-                v = torch.cat([v, pad])
-                m = torch.cat([torch.ones(cur_len), torch.zeros(max_len - cur_len)])
-            else:
-                m = torch.ones(cur_len)
-            padded_vals.append(v)
-            mask_vals.append(m)
-
-        batch_input = torch.stack(padded_vals).to(self.device)
-        batch_mask = torch.stack(mask_vals).to(self.device)
-
-        with torch.inference_mode():
-            logits = self.model(input_values=batch_input, attention_mask=batch_mask).logits
-            probs = torch.sigmoid(logits).detach().cpu().numpy()
-
-        if self.device == "cuda":
-            torch.cuda.synchronize()
-        t1 = time.perf_counter()
-
-        latency_ms = (t1 - t0) * 1000.0
-        per_item_latency = latency_ms / len(audio_slices)
-        return [(probs[i], per_item_latency) for i in range(len(audio_slices))]
+    async def submit_streaming_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        speaker_cache: Any,
+        is_first: bool,
+        is_last: bool
+    ) -> Tuple[np.ndarray, Any, float]:
+        if self._infer_lock is None:
+            self._infer_lock = asyncio.Lock()
+        async with self._infer_lock:
+            return await asyncio.to_thread(
+                self.forward_streaming_chunk, audio_chunk, speaker_cache, is_first, is_last
+            )
 
 
 # ===============================================================================
@@ -511,13 +479,11 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     manager = ModelManager.get_instance()
     manager.load_model()
-    await manager.start_batch_worker()
     yield
-    await manager.stop_batch_worker()
 
 app = FastAPI(
     title="Nemotron-3 Diarization Streaming Server",
-    description="Kiến trúc 1: WebSocket + Ring Buffer cho Realtime Diarization (SLA 0.32s)",
+    description="Kiến trúc 1: WebSocket + Native Speaker Cache cho Realtime Diarization (SLA 0.32s)",
     version="1.3.0",
     lifespan=lifespan
 )
@@ -642,14 +608,19 @@ async def websocket_diarize(
     websocket: WebSocket,
     client_id: Optional[str] = Query(None),
     threshold: float = Query(DEFAULT_THRESHOLD),
+    min_duration_on: float = Query(DEFAULT_MIN_SPEECH_ON),
+    min_duration_off: float = Query(DEFAULT_MIN_GAP_OFF),
+    emit_frame_probs: bool = Query(False),
     key: Optional[str] = Query(None)
 ):
     """
     Kênh WebSocket truyền nhận âm thanh 2 chiều:
     - Client gửi:
         + Binary frame: Mảng bytes PCM 16-bit 16kHz Mono (mỗi gói khoảng 10ms - 240ms).
-        + Text frame JSON: {"action": "reset"} hoặc {"action": "ping"}.
+        + Text frame JSON: {"action": "reset"} | {"action": "ping"} | {"action": "finalize"}.
     - Server trả về JSON Event ngay khi có chunk 240ms hoàn thành.
+    - {"action": "finalize"} xử nốt phần audio dư rồi trả về `final_rttm` — RTTM của
+      cả phiên, dựng từ xác suất frame 10ms qua đúng bộ lọc hậu xử lý lúc train.
     """
     await websocket.accept()
 
@@ -665,9 +636,49 @@ async def websocket_diarize(
 
     session_id = client_id or f"sess_{uuid.uuid4().hex[:8]}"
 
-    session = DiarizationSession(session_id=session_id, threshold=threshold)
-    active_sessions[session_id] = session
     manager = ModelManager.get_instance()
+    session = DiarizationSession(
+        session_id=session_id,
+        threshold=threshold,
+        min_duration_on=min_duration_on,
+        min_duration_off=min_duration_off,
+        emit_frame_probs=emit_frame_probs,
+    )
+    active_sessions[session_id] = session
+
+    async def run_step(is_last: bool = False) -> bool:
+        """Chạy 1 bước streaming và gửi sự kiện về client. Trả về False nếu không chạy được."""
+        audio_chunk = session.next_chunk_audio(is_last=is_last)
+        if is_last and len(audio_chunk) < 400:   # ngắn hơn 1 cửa sổ phân tích mel
+            return False
+
+        frame_probs, new_cache, infer_latency = await manager.submit_streaming_chunk(
+            audio_chunk, session.speaker_cache, session.is_first_chunk, is_last
+        )
+        session.speaker_cache = new_cache
+        t_start, t_end, active_speakers = session.record_chunk(frame_probs)
+        if is_last:
+            session.finished = True
+        else:
+            session.consume_step()
+
+        payload = {
+            "type": "diarization_event",
+            "session_id": session_id,
+            "chunk_index": session.chunk_count,
+            "time_start_sec": round(t_start, 3),
+            "time_end_sec": round(t_end, 3),
+            "active_speakers": active_speakers,
+            "num_active_speakers": len(active_speakers),
+            "unique_speakers_seen": list(session.active_speaker_history),
+            "latency_ms": round(infer_latency, 2),
+            "sla_passed": infer_latency <= 320.0,
+            "is_final_chunk": is_last,
+        }
+        if session.emit_frame_probs:
+            payload["frame_probs"] = np.round(frame_probs, 4).tolist()
+        await websocket.send_json(payload)
+        return True
 
     print(f"[+] Kết nối mới WebSocket: {session_id} (Đang phục vụ {len(active_sessions)} luồng)")
 
@@ -692,35 +703,11 @@ async def websocket_diarize(
                 if len(raw_bytes) > MAX_WS_FRAME_BYTES:
                     await websocket.send_json({"type": "error", "message": "Frame size exceeds 1MB limit"})
                     continue
-                session.ring_buffer.append_pcm16_bytes(raw_bytes)
+                session.append_pcm16_bytes(raw_bytes)
 
-                # 2. Kiểm tra xem đã đủ mẫu để chạy 1 chunk 240ms chưa
-                while session.ring_buffer.has_enough_for_chunk(session.chunk_samples, session.lookahead_samples):
-                    audio_slice, offset_samples, emitted_len = session.get_inference_window()
-
-                    raw_probs, infer_latency = await manager.submit_for_inference(audio_slice)
-
-                    # Khóa kênh người nói và trích xuất danh sách active speakers
-                    _, active_speakers = session.align_and_update_probs(raw_probs, offset_samples)
-
-                    # Tính toán mốc thời gian thực của chunk vừa phân tích
-                    t_start = (session.ring_buffer.last_emitted_sample_idx - session.chunk_samples) / DEFAULT_SAMPLE_RATE
-                    t_end = session.ring_buffer.last_emitted_sample_idx / DEFAULT_SAMPLE_RATE
-
-                    # 3. Phản hồi kết quả về Client
-                    event_payload = {
-                        "type": "diarization_event",
-                        "session_id": session_id,
-                        "chunk_index": session.chunk_count,
-                        "time_start_sec": round(t_start, 3),
-                        "time_end_sec": round(t_end, 3),
-                        "active_speakers": active_speakers,
-                        "num_active_speakers": len(active_speakers),
-                        "unique_speakers_seen": list(session.active_speaker_history),
-                        "latency_ms": round(infer_latency, 2),
-                        "sla_passed": infer_latency <= 320.0
-                    }
-                    await websocket.send_json(event_payload)
+                # 2. Chạy hết các bước streaming 240ms đã đủ dữ liệu
+                while session.has_enough_for_chunk():
+                    await run_step(is_last=False)
 
             # 2. Nhận gói điều khiển dạng text/JSON
             elif "text" in message and message["text"]:
@@ -733,6 +720,29 @@ async def websocket_diarize(
                         print(f"[*] Phiên {session_id} đã RESET sạch trạng thái về 0.0s")
                     elif action == "ping":
                         await websocket.send_json({"type": "pong", "server_time": time.time()})
+                    elif action == "finalize":
+                        # Xử nốt audio dư (chunk cuối không có lookahead) rồi xuất RTTM cả phiên
+                        while session.has_enough_for_chunk():
+                            await run_step(is_last=False)
+                        if not session.finished:
+                            await run_step(is_last=True)
+                        uri = data.get("uri") or session_id
+                        rttm_text, segments = session.build_final_rttm(uri=uri)
+                        await websocket.send_json({
+                            "type": "final_rttm",
+                            "session_id": session_id,
+                            "uri": uri,
+                            "rttm": rttm_text,
+                            "num_segments": len(segments),
+                            "total_frames": session.frames_emitted,
+                            "duration_sec": round(session.frames_emitted * 0.01, 3),
+                            "speakers": sorted({s[2] for s in segments}),
+                            "post_processing": {
+                                "threshold": session.threshold,
+                                "min_duration_on": session.min_duration_on,
+                                "min_duration_off": session.min_duration_off,
+                            },
+                        })
                 except Exception as e:
                     await websocket.send_json({"type": "error", "message": f"Invalid JSON payload: {e}"})
 
