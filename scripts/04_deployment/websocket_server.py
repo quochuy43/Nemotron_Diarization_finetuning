@@ -422,11 +422,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
 active_sessions: Dict[str, DiarizationSession] = {}
 
 
@@ -630,16 +625,19 @@ async def websocket_diarize(
 
 
 # ===============================================================================
-# 7. GIAO DIỆN WEB DEMO TRỰC QUAN (LIVE MICROPHONE & AUDIO VISUALIZER)
+# 7. ROOT ENDPOINT (API SERVICE INFO)
 # ===============================================================================
 
-@app.get("/", response_class=FileResponse)
-def get_demo_ui():
-    """Phục vụ giao diện web trực quan tách biệt từ scripts/04_deployment/frontend/index.html."""
-    index_file = FRONTEND_DIR / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return HTMLResponse("<h1>404: Không tìm thấy frontend/index.html</h1>", status_code=404)
+@app.get("/", response_class=JSONResponse)
+def root_info():
+    """Thông tin trạng thái dịch vụ WebSocket Streaming Diarization."""
+    return {
+        "service": "Nemotron-3 Japanese Streaming Diarization API",
+        "latency_sla": "320ms (240ms chunk + 80ms lookahead)",
+        "websocket_endpoint": "/ws/diarize",
+        "health_check": "/health",
+        "docs": "/docs"
+    }
 
 
 # ===============================================================================

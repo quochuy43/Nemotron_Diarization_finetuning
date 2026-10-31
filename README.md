@@ -19,59 +19,67 @@
   * **JER (Jaccard Error Rate)**, **SCA (Speaker Counting Accuracy %)**, **MAE (Speaker Counting Error)**.
   * **RTF (Real-Time Factor)**: Tốc độ xử lý / thời lượng audio.
 
+> [!TIP]
+> 📖 **Tài liệu & Báo cáo Kỹ thuật Chuyên sâu**:
+> - 📊 [**Báo Cáo Kỹ Thuật Tổng Hợp (Technical Report)**](docs/TECHNICAL_REPORT.md): So sánh đối đầu 4 phiên bản ma trận thực nghiệm (v1.0 -> v1.3), phân tích âm học và quy luật scaling dữ liệu.
+> - 🚀 [**Báo Cáo Nghiệm Thu Xuất Xưởng v1.3 SWA (Production Benchmark)**](docs/PRODUCTION_BENCHMARK.md): Đo đạc độ trễ phần cứng $p_{99} = 29.58\text{ms}$ trên NVIDIA L4 GPU và chuẩn SLA 0.32s.
+
 ---
 
-## 2. Cấu Trúc Thư Mục Chuẩn MLOps (Repository Layout)
+## 2. Cấu Trúc Thư Mục Chuẩn MLOps & Research Layout
 
 ```text
-diarization/
+Nemotron_Diarization_finetuning/
 │
-├── data/                                    <-- TẦNG DỮ LIỆU (Chỉ chứa Audio & Labels, không chứa code)
+├── configs/                                 <-- Cấu hình huấn luyện
+│   └── sortformer_streaming_032s.yaml       <-- Config NeMo 0.32s streaming
+│
+├── data/                                    <-- TẦNG DỮ LIỆU & MANIFESTS
 │   ├── raw/                                 <-- Kho âm thanh gốc (jvs_corpus 100 speakers)
-│   ├── real/                                <-- 4 bộ dữ liệu thật (171 files WAV 16kHz + RTTM, tổng 35.61h)
-│   │   ├── callhome_jpn/                    <-- 120 files thoại gia đình (18.74h)
-│   │   ├── callfriend_jpn/                  <-- 31 files thoại bạn bè (12.65h)
-│   │   ├── ingcrowd_japanese_themed_dialogue/           <-- 10 files Zoom đời sống (2.02h)
-│   │   └── ingcrowd_japanese_roleplay_travel_agency/   <-- 10 files tình huống đóng vai (2.19h)
-│   ├── synthetic/                           <-- 3 mốc dữ liệu mô phỏng sạch sẽ từ JVS Corpus (tổng 416h)
-│   │   ├── synthetic_78/                    <-- 1,560 files 3 phút (78h, tỷ lệ 1:3)
-│   │   ├── synthetic_130/                   <-- 2,600 files 3 phút (130h, tỷ lệ 1:5)
-│   │   └── synthetic_208/                   <-- 4,160 files 3 phút (208h, tỷ lệ 1:8)
+│   ├── real/                                <-- 4 bộ dữ liệu thật (CallHome, CallFriend, IngCrowd - 35.61h)
+│   ├── synthetic/                           <-- Dữ liệu mô phỏng sạch sẽ từ JVS Corpus (416h)
 │   └── manifests/                           <-- Manifests JSON Lines chuẩn NeMo (POSIX forward slashes)
-│       ├── dev_manifest.json                <-- Đề thi thử (43 files - 6.16h | 23 Thật 2spk + 20 Mô phỏng 3-7spk)
-│       ├── test_manifest.json               <-- Kỳ thi thật đóng băng (43 files - 5.44h | 23 Thật 2spk + 20 Mô phỏng 3-7spk)
+│       ├── dev_manifest.json                <-- Đề thi thử (43 files - 6.16h)
+│       ├── test_manifest.json               <-- Kỳ thi thật đóng băng 100% (43 files - 5.44h)
 │       ├── train_real_manifest.json         <-- 125 files Thật (~26.05h)
 │       ├── train_v1_0_sim_only.json         <-- 1,520 files Mô phỏng (~77.8h)
 │       ├── train_v1_1_ratio_1_3.json        <-- 1,645 files (103.9h | Thật 1 : Phỏng 3)
 │       ├── train_v1_2_ratio_1_5.json        <-- 2,685 files (157.2h | Thật 1 : Phỏng 5)
 │       └── train_v1_3_ratio_1_8.json        <-- 4,245 files (237.0h | Thật 1 : Phỏng 8)
 │
-├── scripts/                                 <-- TẦNG CODE THỰC THI (Quản lý mã nguồn theo pipeline)
-│   ├── 01_data_prep/                        <-- [GIAI ĐOẠN 1 & 2: TIỀN XỬ LÝ & TẠO DỮ LIỆU]
+├── docs/                                    <-- TẦNG BÁO CÁO NGHIÊN CỨU & KỸ THUẬT
+│   ├── TECHNICAL_REPORT.md                  <-- Báo cáo đối đầu 4 phiên bản & 4 phát hiện âm học
+│   ├── PRODUCTION_BENCHMARK.md              <-- Báo cáo nghiệm thu mô hình xuất xưởng v1.3 SWA
+│   ├── research_plan.md                     <-- Bản thiết kế kiến trúc ban đầu
+│   └── experiments_history/                 <-- Báo cáo chi tiết từng mốc (v1.0 -> v1.3) & JSON metrics
+│
+├── scripts/                                 <-- MÃ NGUỒN PIPELINE THEO CÁC GIAI ĐOẠN
+│   ├── 01_data_prep/                        <-- [TIỀN XỬ LÝ & TẠO DỮ LIỆU DSP]
 │   │   ├── download_jvs.py                  <-- Tải JVS Corpus 100 speakers
-│   │   ├── download_travel_agency.py        <-- Tải tập thật Travel Agency
-│   │   ├── synthetic_data_generator.py      <-- Engine DSP sinh hội thoại mô phỏng (gọt silence, overlap 12-15%)
-│   │   ├── split_and_prepare_manifests.py  <-- Phân chia Stratified Hold-out Split (Zero Data Leakage)
-│   │   └── reorganize_project_structure.py <-- Tái cấu trúc chuẩn hóa MLOps
+│   │   ├── download_and_prepare_japanese_data.py <-- Tải & chuẩn hóa ELAN sang RTTM
+│   │   ├── split_and_prepare_manifests.py   <-- Phân chia Stratified Hold-out Split (Zero Data Leakage)
+│   │   └── synthetic_data_generator.py      <-- Engine DSP sinh hội thoại mô phỏng (overlap 12-15%)
 │   │
-│   ├── 02_baseline_eval/                    <-- [GIAI ĐOẠN 3: BASELINE & TINH CHỈNH HẬU XỬ LÝ]
-│   │   ├── run_zero_shot_baseline.py        <-- Chạy suy luận streaming 0.32s, trích xuất RTTM & Probs .npz
-│   │   ├── tune_postprocessing.py           <-- Quét Grid Search 72 siêu tham số (threshold, min_on, min_off)
-│   │   ├── evaluate_metrics.py              <-- Tính toán DER Collar 0s/0.25s, JER, SCA, MAE theo lát cắt
-│   │   └── README.md                        <-- Hướng dẫn chi tiết chạy Giai đoạn 3
+│   ├── 02_baseline_eval/                    <-- [BASELINE & TINH CHỈNH HẬU XỬ LÝ]
+│   │   ├── run_zero_shot_baseline.py        <-- Chạy suy luận streaming 0.32s, trích xuất .npz
+│   │   ├── tune_postprocessing.py           <-- Quét Grid Search 72 siêu tham số
+│   │   └── evaluate_metrics.py              <-- Đánh giá NIST DER Collar 0s/0.25s, JER, SCA
 │   │
-│   └── 03_training/                         <-- [GIAI ĐOẠN 4 & 5: HUẤN LUYỆN GRID SEARCH & SWA]
-│       ├── configs/
-│       │   └── sortformer_streaming_032s.yaml
-│       ├── run_train_grid.py                <-- Quét checkpoint đều đặn (~50 CPs / run)
-│       └── checkpoint_averaging_swa.py      <-- Cộng trung bình trọng số Top-5 checkpoint
+│   ├── 03_training/                         <-- [HUẤN LUYỆN GRID SEARCH & SWA]
+│   │   ├── configs/sortformer_streaming_032s.yaml
+│   │   ├── run_train_grid.py                <-- Quét checkpoint đều đặn (~50 CPs / run)
+│   │   └── checkpoint_averaging_swa.py      <-- Checkpoint Averaging (SWA) Top-5 CPs
+│   │
+│   └── 04_deployment/                       <-- [STREAMING INFERENCE & BENCHMARKING]
+│       ├── evaluate_streaming.py            <-- Hardware Profiler trên GPU NVIDIA L4
+│       ├── stream_diarization.py            <-- CLI mô phỏng stream audio từng chunk
+│       ├── websocket_server.py              <-- FastAPI WebSocket Streaming Server
+│       └── test_websocket_client.py         <-- Client kiểm thử chịu tải streaming
 │
-├── experiments/                             <-- TẦNG ARTIFACTS KẾT QUẢ
-│   ├── baselines/                           <-- Kết quả đo đạc v0.1 và v0.2 (RTTMs, Probs, metrics_report.json)
-│   └── checkpoints/                         <-- Lưu checkpoints huấn luyện các version v1.x
-│
-├── plan.md                                  <-- Bản thiết kế chi tiết & Leaderboard nghiệm thu
-└── README.md                                <-- Tài liệu tổng quan (File này)
+├── .gitignore
+├── LICENSE                                  <-- MIT License
+├── README.md                                <-- Tài liệu tổng quan (File này)
+└── requirements.txt                         <-- Ràng buộc thư viện tái lập môi trường
 ```
 
 ---

@@ -31,6 +31,7 @@ nemotron-diarization-service/youtube_3/
 __pycache__/
 *.pyc
 logs.txt
+pyrightconfig.json
 .vscode/
 .idea/
 .DS_Store

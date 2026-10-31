@@ -1,0 +1,26 @@
+# ===============================================================================
+# NEMOTRON-3 JAPANESE STREAMING DIARIZATION DEPENDENCIES
+# ===============================================================================
+
+# Core Deep Learning & Audio Processing
+torch>=2.6.0
+numpy==2.4.6
+transformers>=5.19.0
+soundfile>=0.13.0
+scipy>=1.15.0
+librosa>=0.10.2
+
+# NIST Evaluation Metrics
+pyannote.metrics>=3.2.1
+pyannote.core>=5.0.0
+
+# Real-time WebSocket Streaming API
+fastapi>=0.115.0
+uvicorn>=0.34.0
+websockets>=14.0
+
+# Utilities & Manifest Tools
+pyyaml>=6.0.2
+tqdm>=4.67.0
+pandas>=2.2.0
+huggingface_hub>=0.28.0
